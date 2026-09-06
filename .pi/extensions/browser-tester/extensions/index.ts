@@ -343,7 +343,10 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
       session.screenshot({ fullPage: p.fullPage ?? false, selector: p.selector }).then((shot) => ({
         content: [
           { type: "text", text: `screenshot saved: ${shot.path}` },
-          { type: "image", source: { type: "base64", mediaType: "image/png", data: shot.data } },
+          // flat shape is what pi's tool-result pipeline reads; the nested
+          // source:{type:"base64"} form is Anthropic's outbound wire format and
+          // leaves data undefined here (Buffer.from(undefined) -> throw).
+          { type: "image", data: shot.data, mimeType: "image/png" },
         ],
         details: { path: shot.path },
       })),
