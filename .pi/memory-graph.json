@@ -24,6 +24,23 @@
       "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_6bc23a6d813543dfb45977d7",
       "touched": "2026-09-06T11:01:57.314Z",
       "status": "superseded"
+    },
+    {
+      "id": "f_30517f",
+      "kind": "files",
+      "summary": "scripts/smoke.mjs = zero-dependency assert-based check run by `npm run check` (no playwright/pi/browser needed): known-answer vectors for extension-ID derivation (_hexToId, _extIdFromKey, _extIdFromPath incl. Windows drive-letter case) and serve() guards (encoded-traversal stays in-root, malformed %",
+      "detail": "URL parsing collapses raw and %2e dot segments before the serve handler, so traverse attempts return 404 in-root, not 403 — the resolve() prefix guard is unreachable defense-in-depth.",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_e542c52f36744c2bbe8b4c2e",
+      "touched": "2026-09-06T11:10:44.439Z",
+      "status": "active"
+    },
+    {
+      "id": "f_66b96f",
+      "kind": "decision",
+      "summary": "cext_* tool ops are serialized through one closure mutex in extensions/index.ts (pi runs sibling tool calls concurrently); ChromeExtSession in src/session.js is intentionally NOT internally serialized — a class-level serialize() was deleted to avoid the deadlock from launch() internally calling clos",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_84c0efd1a3784d3fb62e6099",
+      "touched": "2026-09-06T11:10:44.441Z",
+      "status": "active"
     }
   ]
 }

@@ -6,7 +6,7 @@
   "keywords": ["pi-package", "chrome-extension", "e2e", "testing", "playwright"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": ["./index.ts"]
   },
   "dependencies": {
     "playwright": "^1.49.0"
