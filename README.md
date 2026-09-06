@@ -13,16 +13,23 @@ All tools are `cext_*` (kept from the extension-testing origin).
 
 ## Install
 
-- `pi install` this package, or copy this folder to
+- Copy the **whole `browser-tester/` folder** (this repo's only source dir) to
   `~/.pi/agent/extensions/browser-tester/` (global) or
   `<project>/.pi/extensions/browser-tester/` (project-local; auto-discovery
-  uses `index.ts` — no config needed).
-- Inside this repo that project-local copy is only a shim: a `package.json` plus
-  an `index.ts` re-exporting `../../../extensions/index.ts`. Never copy sources
-  there — two copies drift apart and pi silently runs the stale one.
-- First `cext_launch` auto-installs the playwright package (into this folder's
-  `node_modules`) and downloads Chromium (~170 MB) if missing. `npm run
+  uses `index.ts` — no config needed). Or `pi install` this repo, whose root
+  `package.json` points at `./browser-tester/index.ts`.
+- Then `npm install` inside the copied folder (its `package.json` declares
+  `playwright`).
+- First `cext_launch` downloads Chromium (~170 MB) if missing. `npm run
   install-browser` does the browser download alone.
+
+```
+browser-tester/            ← copy this folder
+├── index.ts               # pi entry: the cext_* tool table
+├── src/session.js         # playwright-only core, no pi imports
+├── scripts/               # smoke.mjs (npm run check), install-browser.mjs
+└── package.json           # deps + "pi".extensions: ["./index.ts"]
+```
 
 ## Tools
 
@@ -79,4 +86,4 @@ manifest is ignored for unpacked loads.
   `~/.cache/ms-playwright/chromium-<revision>/` (macOS/Linux), adding an
   `INSTALLATION_COMPLETE` marker file.
 - **`npm run check`** — zero-dependency smoke test for the pure core logic
-  (`scripts/smoke.mjs`), runnable without pi or a browser.
+  (`browser-tester/scripts/smoke.mjs`), runnable without pi or a browser.

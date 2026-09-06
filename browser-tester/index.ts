@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ChromeExtSession, NotLaunchedError } from "../src/session.js";
+import { ChromeExtSession, NotLaunchedError } from "./src/session.js";
 
 const session = new ChromeExtSession();
 

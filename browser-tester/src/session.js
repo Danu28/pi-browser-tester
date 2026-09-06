@@ -1,6 +1,6 @@
 // Core browser-driving session for browser-tester.
 // Playwright-only: no pi imports, so scripts/smoke.mjs can prove it end to end
-// without pi. The pi extension (extensions/index.ts) wraps this in tools.
+// without pi. The pi extension (index.ts) wraps this in tools.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
