@@ -136,6 +136,25 @@ export class ChromeExtSession {
       this._pushLog("workerevent", "info", `service worker registered: ${sw.url()}`);
       sw.on("console", (msg) => this._pushLog("worker", msg.type(), msg.text()));
     });
+    // Extensions live or die by network behaviour (broken-link checkers, ad
+    // blockers, request loggers), so surface failures and 4xx/5xx as logs.
+    ctx.on("requestfailed", (r) =>
+      this._pushLog("network", "error", `${r.method()} ${r.url()} — ${r.failure()?.errorText ?? "failed"}`)
+    );
+    ctx.on("response", (r) => {
+      if (r.status() >= 400) this._pushLog("network", "warning", `HTTP ${r.status()} ${r.method()} ${r.url()}`);
+    });
+    ctx.on("download", async (d) => {
+      // Exports (report .pdf/.doc/.zip) are a common extension flow: keep the
+      // file on disk so the agent can inspect it instead of losing it.
+      const name = d.suggestedFilename();
+      this._pushLog("download", "info", `${name}`);
+      try {
+        await d.saveAs(join(this.artifactsDir, name));
+      } catch (e) {
+        this._pushLog("download", "error", `${name} — ${e.message}`);
+      }
+    });
   }
 
   _scanExtId() {
@@ -208,11 +227,11 @@ export class ChromeExtSession {
     } catch {
       // non-HTML content (json/xml/pdf) — no body text
     }
-    const pages = this.context
-      .pages()
-      .filter((p) => !p.isClosed())
-      .map((p, index) => ({ index, url: p.url() }));
-    const activeIndex = pages.findIndex((p) => p.url === page.url());
+    // Index by object identity, not URL: two tabs on the same URL (common after
+    // an extension opens a tab of its own) must not report the wrong active one.
+    const open = this.context.pages().filter((p) => !p.isClosed());
+    const activeIndex = open.indexOf(page);
+    const pages = open.map((p, index) => ({ index, url: p.url() }));
     return {
       url: page.url(),
       title: await page.title().catch(() => ""),
@@ -347,10 +366,57 @@ export class ChromeExtSession {
     return { closed: true };
   }
 
-  async open(url) {
-    const page = await this._ensurePage();
+  async open(url, { newTab = false } = {}) {
+    if (!this.context) throw new NotLaunchedError();
+    const page = newTab ? await this.context.newPage() : await this._ensurePage();
+    if (newTab) this.activePage = page;
     await page.goto(url, { waitUntil: "domcontentloaded" });
     return this._snapshot();
+  }
+
+  // Close one page (e.g. the marketing tab an extension opens on install) so it
+  // stops confusing active-tab resolution, without tearing down the session.
+  async closePage(index) {
+    if (!this.context) throw new NotLaunchedError();
+    const pages = this.context.pages().filter((p) => !p.isClosed());
+    const page = index == null ? await this._ensurePage() : pages[index];
+    if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
+    await page.close();
+    if (this.activePage === page) this.activePage = null;
+    return this._snapshot();
+  }
+
+  // Reload just the extension (chrome.runtime.reload() in its own worker/page)
+  // instead of relaunching the whole browser after every source edit.
+  async reloadExtension() {
+    if (!this.context) throw new NotLaunchedError();
+    const target = this.context.serviceWorkers()[0] ?? this.context.backgroundPages()[0];
+    if (!target) throw new Error("No service worker or background page — nothing to reload");
+    // reload() tears down the worker, so the evaluate call itself rejects.
+    await target.evaluate(() => chrome.runtime.reload()).catch(() => {});
+    await new Promise((r) => setTimeout(r, 1500));
+    return {
+      reloaded: true,
+      serviceWorkers: this.context.serviceWorkers().map((w) => w.url()),
+      backgroundPages: this.context.backgroundPages().map((p) => p.url()),
+    };
+  }
+
+  // Escape hatch: raw CDP for anything the tool set does not wrap (permissions,
+  // Network.*, Emulation.*, …). target: "page" (default) or "browser".
+  async cdp(method, params = {}, { target = "page" } = {}) {
+    if (!this.context) throw new NotLaunchedError();
+    let session;
+    if (target === "browser") {
+      this._browserCdp ??= await this.context.browser().newBrowserCDPSession();
+      session = this._browserCdp;
+    } else {
+      const page = await this._ensurePage();
+      this._pageCdp ??= new WeakMap();
+      session = this._pageCdp.get(page) ?? (await this.context.newCDPSession(page));
+      this._pageCdp.set(page, session);
+    }
+    return session.send(method, params);
   }
 
   async popup() {
@@ -361,7 +427,22 @@ export class ChromeExtSession {
     } catch {}
     const popupPath = manifest.action?.default_popup;
     if (!popupPath) throw new Error(`No action.default_popup in manifest`);
+    const prev = this.activePage && !this.activePage.isClosed() ? this.activePage : null;
     const page = await this.context.newPage();
+    // A real action popup floats over the page without stealing its "active
+    // tab" status, so chrome.tabs.query({active, lastFocusedWindow}) inside the
+    // popup resolves to the host tab. Playwright's popup is just another tab in
+    // the same window, so hand focus back to the host page *before* navigating:
+    // popups query their target while loading, i.e. before goto() returns.
+    // Without this the extension targets the popup tab itself and refuses to run
+    // ("can't run on this browser page").
+    // ponytail: Chromium flips the active tab asynchronously after
+    // bringToFront, and the popup queries its target while loading, so give
+    // focus a moment to settle — without this the fix works only sometimes.
+    if (prev) {
+      await prev.bringToFront().catch(() => {});
+      await new Promise((r) => setTimeout(r, 150));
+    }
     this.activePage = page;
     await page.goto(`chrome-extension://${this.extId}/${popupPath}`, {
       waitUntil: "domcontentloaded",
@@ -388,15 +469,28 @@ export class ChromeExtSession {
     return this._snapshot();
   }
 
-  async fill(selector, value) {
+  async fill(selector, value, { timeout = 5000 } = {}) {
     const page = await this._ensurePage();
-    await page.locator(selector).first().fill(value, { timeout: 5000 });
+    await page.locator(selector).first().fill(value, { timeout });
     return this._snapshot();
   }
 
   async eval(expression) {
     const page = await this._ensurePage();
-    const raw = await page.evaluate(expression);
+    // Extension pages expose chrome.*, and agents naturally write
+    // `await chrome.tabs.query({})` — a SyntaxError as a plain expression. Retry
+    // inside an async IIFE so top-level await works; throw the original error if
+    // the wrapped form fails too (i.e. the expression is genuinely broken).
+    let raw;
+    try {
+      raw = await page.evaluate(expression);
+    } catch (e) {
+      try {
+        raw = await page.evaluate(`(async () => (${expression}))()`);
+      } catch {
+        throw e;
+      }
+    }
     let text;
     try {
       text = JSON.stringify(raw, null, 2);
@@ -406,10 +500,16 @@ export class ChromeExtSession {
     return { result: text.slice(0, 12000), type: raw === null ? "null" : typeof raw };
   }
 
-  async wait(selector, { timeout = 5000, state = "visible" } = {}) {
+  async wait(selector, { timeout = 5000, state = "visible", text = undefined } = {}) {
     const page = await this._ensurePage();
+    // `text` waits for copy to show up (e.g. "Tests complete") — the common
+    // assertion when the extension renders results asynchronously.
+    const loc =
+      text === undefined
+        ? page.locator(selector).first()
+        : page.getByText(text, { exact: false }).first();
     try {
-      await page.locator(selector).first().waitFor({ state, timeout });
+      await loc.waitFor({ state, timeout });
       return { found: true };
     } catch {
       return { found: false };
@@ -424,9 +524,9 @@ export class ChromeExtSession {
     return { data: buf.toString("base64"), path: join(this.artifactsDir, name) };
   }
 
-  async logs({ level, since = 0 } = {}) {
+  async logs({ level, since = 0, source = undefined } = {}) {
     const entries = this.logEntries.filter(
-      (e) => e.i >= since && (!level || e.level === level)
+      (e) => e.i >= since && (!level || e.level === level) && (!source || e.source === source)
     );
     return { entries, next: this.logSeq };
   }

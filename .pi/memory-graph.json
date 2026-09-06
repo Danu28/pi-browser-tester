@@ -41,6 +41,42 @@
       "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_84c0efd1a3784d3fb62e6099",
       "touched": "2026-09-06T11:10:44.441Z",
       "status": "active"
+    },
+    {
+      "id": "f_e8cdd6",
+      "kind": "decision",
+      "summary": "package.json \"pi.extensions\" must point at \"./index.ts\" (root shim), not \"./extensions\": pi derives an extension's display name from the entry path's parent segment for local/drop-in installs, so \"./extensions\" makes pi label the extension \"extensions\" instead of \"browser-extension-tester\".",
+      "detail": "pi's own docs show \"extensions\": [\"./extensions\"] as the canonical package example, and pi strips the \"extensions/\" prefix only for npm:/git: sources — a local-path install (source:\"local\") falls back to path-segment naming, so the entry's parent dir becomes the label. Do not point the manifest back",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_00_ET_vGjOcqyZyM1ieOzpJLJX0989",
+      "touched": "2026-09-06T11:15:00.117Z",
+      "status": "active"
+    },
+    {
+      "id": "f_a72d60",
+      "kind": "convention",
+      "summary": "To test a Chrome Web Store extension with cext_*, download the CRX via curl \"https://clients2.google.com/service/update2/crx?response=redirect&prodversion=133.0.0.0&acceptformat=crx2,crx3&x=id%3D<ID>%26uc%26lang%3Den-US\" and unzip it (Python zipfile handles the Cr24 header); cext_launch then takes t",
+      "detail": "cext_* only loads unpacked folders, so this is the only way to test a published store extension. Unpacked CRX keeps update_url in manifest, which Chrome ignores.",
+      "source": "01a07676-7599-740c-8d3d-42a8d0e6aac4:chatcmpl-tool-a01aa04bbb8f291b",
+      "touched": "2026-09-06T11:32:46.742Z",
+      "status": "active"
+    },
+    {
+      "id": "f_47dfcf",
+      "kind": "landmine",
+      "summary": "cext_popup opens the popup as a tab in the same window, so extensions that resolve their target with chrome.tabs.query({active:true,lastFocusedWindow:true}) target the popup tab itself and refuse to run — reopen as chrome-extension://<id>/popup/popup.html?detached=true&tabId=<N> (tab ids via cext_ev",
+      "detail": "cext_eval has no top-level await; wrap chrome API calls in an async IIFE. Popup pages have full chrome.tabs access, so this also works to enumerate tabs.",
+      "source": "01a07676-7599-740c-8d3d-42a8d0e6aac4:chatcmpl-tool-ac011bb4ba6deaaa",
+      "touched": "2026-09-06T11:32:46.744Z",
+      "status": "active"
+    },
+    {
+      "id": "f_f8a372",
+      "kind": "landmine",
+      "summary": "This project exists as two divergent copies: the repo at ~/Desktop/Pi-Repos/browser-extension-tester and the live install at ~/.pi/agent/extensions/browser-extension-tester (its own git repo, no remote). Edits in the repo are NOT live until the files are copied over AND pi is restarted (pi loads ext",
+      "detail": "The install copy has drifted before (it carried a popup-anchor fix the repo lacked). Sync: cp src/session.js extensions/index.ts scripts/smoke.mjs package.json README.md between them, then restart pi.",
+      "source": "01a07676-7599-740c-8d3d-42a8d0e6aac4:chatcmpl-tool-9711ebb1392d551b",
+      "touched": "2026-09-06T11:46:23.735Z",
+      "status": "active"
     }
   ]
 }

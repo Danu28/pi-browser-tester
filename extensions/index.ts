@@ -118,15 +118,22 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     promptSnippet: "Navigate the browser to a URL",
     parameters: Type.Object({
       url: Type.String({ description: "URL to open" }),
+      newTab: Type.Optional(
+        Type.Boolean({ description: "Open in a new tab instead of navigating the active page (default false)" })
+      ),
     }),
-    execute: (p) => session.open(p.url).then((s) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } })),
+    execute: (p) =>
+      session.open(p.url, { newTab: p.newTab ?? false }).then((s) => ({
+        content: [{ type: "text", text: snapText(s) }],
+        details: { s },
+      })),
   });
 
   tool({
     name: "cext_popup",
     label: "Open Popup",
     description:
-      "Open the extension's action popup (from action.default_popup in manifest.json) as a page and make it the active page. Use after cext_launch to test popup UI.",
+      "Open the extension's action popup (from action.default_popup in manifest.json) as a page and make it the active page. The previously active page keeps browser focus, so the extension still resolves chrome.tabs.query({active,lastFocusedWindow}) to the page under test. Use after cext_launch to test popup UI.",
     promptSnippet: "Open the extension popup for UI testing",
     parameters: Type.Object({}),
     execute: () => session.popup().then((s) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } })),
@@ -163,8 +170,13 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     parameters: Type.Object({
       selector: Type.String({ description: "Playwright selector, e.g. '#increment' or 'text=Save'" }),
       index: Type.Optional(Type.Integer({ description: "0-based index of the element to click when multiple match" })),
+      timeout: Type.Optional(Type.Integer({ description: "Click timeout in ms (default 5000)" })),
     }),
-    execute: (p) => session.click(p.selector, { index: p.index ?? 0 }).then((s) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } })),
+    execute: (p) =>
+      session.click(p.selector, { index: p.index ?? 0, timeout: p.timeout ?? 5000 }).then((s) => ({
+        content: [{ type: "text", text: snapText(s) }],
+        details: { s },
+      })),
   });
 
   tool({
@@ -175,8 +187,13 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     parameters: Type.Object({
       selector: Type.String({ description: "Playwright selector for the input" }),
       value: Type.String({ description: "Text to type" }),
+      timeout: Type.Optional(Type.Integer({ description: "Fill timeout in ms (default 5000)" })),
     }),
-    execute: (p) => session.fill(p.selector, p.value).then((s) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } })),
+    execute: (p) =>
+      session.fill(p.selector, p.value, { timeout: p.timeout ?? 5000 }).then((s) => ({
+        content: [{ type: "text", text: snapText(s) }],
+        details: { s },
+      })),
   });
 
   tool({
@@ -204,13 +221,20 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     name: "cext_wait",
     label: "Wait For Element",
     description:
-      "Wait up to timeout ms for the first element matching selector to be visible. Returns { found: true/false } — non-throwing, so use it for assertions like 'wait until the popup shows the updated value'.",
-    promptSnippet: "Wait for an element to appear (assertion)",
+      "Wait up to timeout ms for a selector (or for text to appear). Returns { found: true/false } — non-throwing, so use it for assertions like 'wait until the popup shows \"Tests complete\"'. Pass state:'hidden' to wait for something to disappear (e.g. a spinner).",
+    promptSnippet: "Wait for an element or text to appear (assertion)",
     parameters: Type.Object({
-      selector: Type.String({ description: "Playwright selector" }),
+      selector: Type.Optional(Type.String({ description: "Playwright selector (omit when waiting on text)" })),
+      text: Type.Optional(Type.String({ description: "Wait for this visible text instead of a selector", })),
+      state: Type.Optional(
+        StringEnum(["visible", "hidden", "attached", "detached"], { description: "Element state to wait for (default visible)" })
+      ),
       timeout: Type.Optional(Type.Integer({ description: "Milliseconds to wait (default 5000)" })),
     }),
-    execute: (p) => session.wait(p.selector, { timeout: p.timeout ?? 5000 }).then((r) => ({ content: [{ type: "text", text: `found: ${r.found}` }], details: { r } })),
+    execute: (p) =>
+      session
+        .wait(p.selector, { timeout: p.timeout ?? 5000, state: p.state ?? "visible", text: p.text })
+        .then((r) => ({ content: [{ type: "text", text: `found: ${r.found}` }], details: { r } })),
   });
 
   tool({
@@ -240,10 +264,15 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     promptSnippet: "Read browser console and extension service-worker logs",
     parameters: Type.Object({
       level: Type.Optional(StringEnum(["log", "error", "warning", "debug", "info", "pageerror"])),
+      source: Type.Optional(
+        StringEnum(["page", "worker", "network", "download", "workerevent"], {
+          description: "Filter by source: page console, extension service worker, network failures/4xx-5xx, downloads",
+        })
+      ),
       since: Type.Optional(Type.Integer({ description: "Only entries with index >= since (from the previous call's next)" })),
     }),
     execute: (p) =>
-      session.logs({ level: p.level, since: p.since ?? 0 }).then((r) => ({
+      session.logs({ level: p.level, source: p.source, since: p.since ?? 0 }).then((r) => ({
         content: [
           {
             type: "text",
@@ -280,6 +309,51 @@ export default function chromeExtensionTester(pi: ExtensionAPI) {
     promptSnippet: "Shut down the test browser",
     parameters: Type.Object({}),
     execute: () => session.close().then(() => ({ content: [{ type: "text", text: "closed" }], details: {} })),
+  });
+
+  tool({
+    name: "cext_close_page",
+    label: "Close Page",
+    description:
+      "Close one page (default: the active page, or the page at index) without closing the browser. Use to get rid of tabs the extension opened itself (onboarding/marketing tabs) so they stop confusing active-tab resolution.",
+    promptSnippet: "Close a tab",
+    parameters: Type.Object({
+      index: Type.Optional(Type.Integer({ description: "Page index from the pages list (default: active page)" })),
+    }),
+    execute: (p) =>
+      session.closePage(p.index).then((s) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } })),
+  });
+
+  tool({
+    name: "cext_reload",
+    label: "Reload Extension",
+    description:
+      "Reload the loaded extension (chrome.runtime.reload()) without relaunching the browser — the fast way to pick up source edits. Falls back to cext_launch (full relaunch) for extensions with no service worker or background page.",
+    promptSnippet: "Reload the extension after editing its source",
+    parameters: Type.Object({}),
+    execute: () =>
+      session.reloadExtension().then((r) => ({
+        content: [{ type: "text", text: `extension reloaded\nservice workers: ${r.serviceWorkers.join(", ") || "none"}` }],
+        details: { r },
+      })),
+  });
+
+  tool({
+    name: "cext_cdp",
+    label: "Raw CDP",
+    description:
+      "Escape hatch: send a raw Chrome DevTools Protocol command (Network.enable, Browser.grantPermissions, Emulation.*, Page.captureScreenshot, …) to the active page or the browser. Use for anything the cext_* tools do not wrap.",
+    promptSnippet: "Send a raw CDP command",
+    parameters: Type.Object({
+      method: Type.String({ description: "CDP method, e.g. 'Network.enable' or 'Browser.grantPermissions'" }),
+      params: Type.Optional(Type.Any({ description: "CDP params object" })),
+      target: Type.Optional(StringEnum(["page", "browser"], { description: "Send to the active page (default) or the browser" })),
+    }),
+    execute: (p) =>
+      session.cdp(p.method, p.params ?? {}, { target: p.target ?? "page" }).then((r) => ({
+        content: [{ type: "text", text: `${p.method} → ${JSON.stringify(r) ?? "(no result)"}` }],
+        details: { r },
+      })),
   });
 
   pi.on("session_shutdown", async () => {

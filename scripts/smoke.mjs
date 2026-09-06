@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChromeExtSession } from "../src/session.js";
+import { ChromeExtSession, NotLaunchedError } from "../src/session.js";
 
 const s = new ChromeExtSession();
 
@@ -75,4 +75,14 @@ try {
   rmSync(dir, { recursive: true, force: true });
 }
 
-console.log("smoke ok: id derivation + serve() guard");
+// 5. ops added later must fail with the actionable NotLaunchedError, not a TypeError
+for (const [name, call] of [
+  ["cdp", () => s.cdp("Network.enable")],
+  ["closePage", () => s.closePage()],
+  ["reloadExtension", () => s.reloadExtension()],
+  ["open", () => s.open("http://127.0.0.1")],
+]) {
+  await assert.rejects(call(), NotLaunchedError, `${name}() should require a launch`);
+}
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors");
