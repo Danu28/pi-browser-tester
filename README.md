@@ -18,6 +18,9 @@ All tools are `cext_*` (kept from the extension-testing origin).
   `<project>/.pi/extensions/browser-tester/` (project-local; auto-discovery
   uses `index.ts` — no config needed). Or `pi install` this repo, whose root
   `package.json` points at `./browser-tester/index.ts`.
+- Or run `install.bat` (Windows) — it copies `browser-tester/` to
+  `%USERPROFILE%\.pi\agent\extensions\browser-tester\`, deleting any previous
+  copy first, so re-run it after every edit.
 - Then `npm install` inside the copied folder (its `package.json` declares
   `playwright`).
 - First `cext_launch` downloads Chromium (~170 MB) if missing. `npm run
