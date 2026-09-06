@@ -287,6 +287,8 @@ export class ChromeExtSession {
   async launch({ extensionPath, url, headless = false, channel = "chromium", cwd = process.cwd(), onProgress = () => {} }) {
     // No extensionPath = plain website-testing mode (no side-load flags below).
     this.extDir = extensionPath ? resolve(cwd, extensionPath) : null;
+    // Kept so cext_reload can relaunch with the same options when it has to.
+    this.launchOpts = { extensionPath, headless, channel, cwd };
     // Resolve playwright (auto-installing the package into this extension's own
     // node_modules on first use if it was never installed).
     const chromium = (await loadPlaywright()).chromium;
@@ -388,18 +390,39 @@ export class ChromeExtSession {
 
   // Reload just the extension (chrome.runtime.reload() in its own worker/page)
   // instead of relaunching the whole browser after every source edit.
-  async reloadExtension() {
+  async reloadExtension({ waitMs = 4000 } = {}) {
     if (!this.context) throw new NotLaunchedError();
     const target = this.context.serviceWorkers()[0] ?? this.context.backgroundPages()[0];
     if (!target) throw new Error("No service worker or background page — nothing to reload");
     // reload() tears down the worker, so the evaluate call itself rejects.
     await target.evaluate(() => chrome.runtime.reload()).catch(() => {});
-    await new Promise((r) => setTimeout(r, 1500));
-    return {
-      reloaded: true,
+    const targets = () => ({
       serviceWorkers: this.context.serviceWorkers().map((w) => w.url()),
       backgroundPages: this.context.backgroundPages().map((p) => p.url()),
-    };
+    });
+    // A reload that leaves no live worker behind is not a reload: every
+    // chrome-extension:// URL then fails with ERR_BLOCKED_BY_CLIENT. Chrome
+    // never respawns the worker under --load-extension, so relaunch the browser
+    // with the same options rather than reporting a reload that didn't happen.
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      if (await this._extensionAlive()) {
+        return { reloaded: true, fallback: null, ...targets() };
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    await this.launch({ ...this.launchOpts });
+    return { reloaded: true, fallback: "relaunch", ...targets() };
+  }
+
+  // "Is there a worker?" lies right after a reload: Playwright keeps the torn
+  // down handle for a moment (evaluate then fails with "Service worker
+  // restarted"). Only an evaluate() that resolves proves the extension is back.
+  async _extensionAlive() {
+    for (const w of [...this.context.serviceWorkers(), ...this.context.backgroundPages()]) {
+      if (await w.evaluate(() => 1).then(() => true, () => false)) return true;
+    }
+    return false;
   }
 
   // Escape hatch: raw CDP for anything the tool set does not wrap (permissions,

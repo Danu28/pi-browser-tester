@@ -119,4 +119,42 @@ s2.context.emit("requestfailed", {
 assert.match(s2.logEntries.at(-2).text, /^HTTP 404 GET http:\/\/x\/a$/);
 assert.match(s2.logEntries.at(-1).text, /^POST http:\/\/x\/b . net::ERR_BLOCKED$/);
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks");
+// 8. cext_reload: fast path when the worker respawns, browser relaunch when it
+//    does not. Reporting a reload that left the extension dead made every
+//    chrome-extension:// URL fail with ERR_BLOCKED_BY_CLIENT.
+const reloadSession = (respawns) => {
+  const r = new ChromeExtSession();
+  let reloading = false; // set by the reload itself: the worker is gone from then on
+  const worker = {
+    url: () => "chrome-extension://abc/sw.js",
+    evaluate: async () => {
+      reloading = true;
+    },
+  };
+  r.context = {
+    serviceWorkers: () => (!reloading || respawns ? [worker] : []),
+    backgroundPages: () => [],
+  };
+  r.launchOpts = { extensionPath: "C:\\ext", headless: false, channel: "chromium", cwd: process.cwd() };
+  r.launch = async (opts) => {
+    r.relaunchedWith = opts;
+    return {};
+  };
+  return r;
+};
+
+const respawned = reloadSession(true);
+assert.deepEqual(await respawned.reloadExtension({ waitMs: 50 }), {
+  reloaded: true,
+  fallback: null,
+  serviceWorkers: ["chrome-extension://abc/sw.js"],
+  backgroundPages: [],
+});
+assert.equal(respawned.relaunchedWith, undefined, "respawned worker must not trigger a relaunch");
+
+const never = reloadSession(false);
+const relaunched = await never.reloadExtension({ waitMs: 50 });
+assert.equal(relaunched.fallback, "relaunch");
+assert.equal(never.relaunchedWith.extensionPath, "C:\\ext", "fallback must relaunch with the original options");
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback");
