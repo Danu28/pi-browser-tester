@@ -230,6 +230,24 @@ const tools: {
     run: (p) => session.press(p.selector, p.key, { timeout: p.timeout ?? 5000 }).then(snap),
   },
   {
+    name: "cext_scroll",
+    label: "Scroll Page",
+    description:
+      "Scroll the active page: to a selector (element into view), to the top or bottom (infinite scroll / lazy-loaded lists), or by x/y pixels. Returns the resulting scroll position. Note: clicks and hovers already scroll their own target into view.",
+    promptSnippet: "Scroll the page (to an element, top/bottom, or by pixels)",
+    parameters: Type.Object({
+      selector: Type.Optional(selector("Playwright selector — scroll this element into view")),
+      to: Type.Optional(oneOf(["top", "bottom"], "Scroll to the top or bottom of the page")),
+      x: Type.Optional(Type.Integer({ description: "Horizontal scroll delta in px" })),
+      y: Type.Optional(Type.Integer({ description: "Vertical scroll delta in px" })),
+      timeout: ms("Scroll"),
+    }),
+    run: (p) =>
+      session
+        .scroll({ selector: p.selector, to: p.to, x: p.x ?? 0, y: p.y ?? 0, timeout: p.timeout ?? 5000 })
+        .then((r) => text(`scrolled to x=${r.x} y=${r.y}`, { r })),
+  },
+  {
     name: "cext_eval",
     label: "Evaluate JS",
     description:

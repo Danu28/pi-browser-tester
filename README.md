@@ -41,6 +41,7 @@ browser-tester/            ← copy this folder
 | `cext_popup` | Open the extension's `action.default_popup` as a page |
 | `cext_click` / `cext_fill` / `cext_select` / `cext_hover` | Drive page UI with Playwright selectors: click, fill inputs, pick dropdown options, hover menus/tooltips |
 | `cext_press` | Press keys / shortcuts (Tab, Enter, Escape, Control+a, …) — global or after focusing an element (a11y flows) |
+| `cext_scroll` | Scroll to a selector, to top/bottom (infinite scroll, lazy-loaded lists), or by x/y pixels — returns the new scroll position |
 | `cext_eval` | Run JS in the active page (top-level `await` works; `chrome.*` is available on extension pages) |
 | `cext_wait` | Non-throwing wait for a selector, text, or `state:'hidden'` (assertions) |
 | `cext_snapshot` / `cext_screenshot` | Read page state; screenshots of the page **or a single element** saved to `./artifacts/` and returned to the model |

@@ -515,6 +515,22 @@ export class ChromeExtSession {
     );
   }
 
+  // Scrolling for its own sake: lazy-loaded / infinite lists, reading or
+  // shooting below-the-fold content. Clicks already scroll their own target.
+  async scroll({ selector = null, to = null, x = 0, y = 0, timeout = 5000 } = {}) {
+    const page = await this._ensurePage();
+    if (selector) {
+      await page.locator(selector).first().scrollIntoViewIfNeeded({ timeout });
+    } else if (to === "bottom") {
+      await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    } else if (to === "top") {
+      await page.evaluate(() => window.scrollTo(0, 0));
+    } else if (x || y) {
+      await page.evaluate(([dx, dy]) => window.scrollBy(dx, dy), [x, y]);
+    }
+    return page.evaluate(() => ({ x: Math.round(window.scrollX), y: Math.round(window.scrollY) }));
+  }
+
   async history(direction) {
     return this._act((page) =>
       direction === "back"
