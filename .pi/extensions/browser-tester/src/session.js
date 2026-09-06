@@ -150,7 +150,10 @@ export class ChromeExtSession {
       this._pushLog("network", "error", `${r.method()} ${r.url()} — ${r.failure()?.errorText ?? "failed"}`)
     );
     ctx.on("response", (r) => {
-      if (r.status() >= 400) this._pushLog("network", "warning", `HTTP ${r.status()} ${r.method()} ${r.url()}`);
+      // Response has no method(): the verb is on Response.request(). Calling
+      // r.method() threw on the first 4xx/5xx and killed the host process
+      // (Playwright emits from its dispatcher, so the throw is uncatchable here).
+      if (r.status() >= 400) this._pushLog("network", "warning", `HTTP ${r.status()} ${r.request().method()} ${r.url()}`);
     });
     ctx.on("download", async (d) => {
       // Exports (report .pdf/.doc/.zip) are a common extension flow: keep the

@@ -99,4 +99,24 @@ assert.deepEqual(launchArgs(null), []);
 assert.deepEqual(launchArgs(undefined), []);
 assert.deepEqual(launchArgs(""), []);
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args");
+// 7. network hooks must log 4xx/5xx and failures without throwing: Response has
+//    no method() (it is on Response.request()), and a throw here escapes as an
+//    uncaughtException that kills the host process.
+const { EventEmitter } = await import("node:events");
+const s2 = new ChromeExtSession();
+s2.context = new EventEmitter();
+s2._attachHooks();
+s2.context.emit("response", {
+  status: () => 404,
+  url: () => "http://x/a",
+  request: () => ({ method: () => "GET" }),
+});
+s2.context.emit("requestfailed", {
+  method: () => "POST",
+  url: () => "http://x/b",
+  failure: () => ({ errorText: "net::ERR_BLOCKED" }),
+});
+assert.match(s2.logEntries.at(-2).text, /^HTTP 404 GET http:\/\/x\/a$/);
+assert.match(s2.logEntries.at(-1).text, /^POST http:\/\/x\/b . net::ERR_BLOCKED$/);
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks");
