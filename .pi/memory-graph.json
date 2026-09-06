@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "facts": [
+    {
+      "id": "f_04e31e",
+      "kind": "files",
+      "summary": "src/session.js = Playwright-only Chrome extension driver (ChromeExtSession class, no pi imports) wrapped by extensions/index.ts into the cext_* tool family; entry points: extensions/index.ts (tool registration), index.ts (drop-in shim re-export), scripts/install-browser.mjs (manual Chromium installe",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_3fdc0ab71a2748a3b2b1048f",
+      "touched": "2026-09-06T11:01:57.312Z",
+      "status": "active"
+    },
+    {
+      "id": "f_7d5d98",
+      "kind": "landmine",
+      "summary": "`npm run check` is broken: package.json \"check\" runs `node scripts/smoke.mjs`, but no smoke.mjs exists in scripts/ (only install-browser.mjs) — the repo has no runnable verification; do not rely on it until written.",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_df928b23b1e54fd5acc73be9",
+      "touched": "2026-09-06T11:01:57.313Z",
+      "status": "superseded"
+    },
+    {
+      "id": "f_26e43e",
+      "kind": "landmine",
+      "summary": "Audit findings in browser-extension-tester (unfixed as of this session): serialize() at src/session.js:121 is dead code so concurrent cext_* calls race the browser; ctx.on(\"pageerror\") at :137 never fires (Playwright BrowserContext has 'weberror' not 'pageerror'); duplicate promptSnippet keys at ext",
+      "source": "01a0765b-bc72-740c-8d3d-42a521c25be7:call_6bc23a6d813543dfb45977d7",
+      "touched": "2026-09-06T11:01:57.314Z",
+      "status": "superseded"
+    }
+  ]
+}

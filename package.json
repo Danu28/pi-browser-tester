@@ -1,0 +1,23 @@
+{
+  "name": "browser-extension-tester",
+  "version": "0.1.0",
+  "description": "pi extension: load any unpacked Chrome extension into a real Playwright-driven Chromium and drive it end to end from the coding agent",
+  "type": "module",
+  "keywords": ["pi-package", "chrome-extension", "e2e", "testing", "playwright"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "check": "node scripts/smoke.mjs",
+    "install-browser": "node scripts/install-browser.mjs"
+  }
+}
