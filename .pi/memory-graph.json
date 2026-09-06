@@ -77,6 +77,42 @@
       "source": "01a07676-7599-740c-8d3d-42a8d0e6aac4:chatcmpl-tool-9711ebb1392d551b",
       "touched": "2026-09-06T11:46:23.735Z",
       "status": "active"
+    },
+    {
+      "id": "f_d91ca0",
+      "kind": "convention",
+      "summary": "Verify changes to src/session.js with a standalone node script that imports file:///…/src/session.js (repo needs `npm install` — playwright is not committed), because the cext_* tools inside a running pi session execute the copy loaded at pi startup, not your edited file.",
+      "detail": "Absolute Windows paths must be file:// URLs in ESM. Pattern: launch({extensionPath}) → serve(dir) → open(origin/index.html) → popup() → assert the popup body. This is how the popup active-tab fix was proven.",
+      "source": "01a07676-7599-740c-8d3d-42a8d0e6aac4:chatcmpl-tool-9819010b7af75972",
+      "touched": "2026-09-06T11:47:22.553Z",
+      "status": "active"
+    },
+    {
+      "id": "f_c0194a",
+      "kind": "decision",
+      "summary": "Extension rebranded browser-extension-tester → browser-tester and scoped up to general browser work: cext_launch now takes extensionPath OPTIONALLY — omit it for plain website testing (no --load-extension flags, extId=null), pass it for extension testing. Added tools: cext_history (back/forward), ce",
+      "detail": "Installable copy lives at <repo>/.pi/extensions/browser-tester (project-local auto-discovery; pi docs confirm .pi/extensions/*/index.ts). package.json name = browser-tester so the display name + install dir agree.",
+      "source": "01a0768d-7fa9-740c-8d3d-42ade47195c7:call_c4dd568818c6476fb4ccbfa7",
+      "touched": "2026-09-06T12:01:06.149Z",
+      "status": "active"
+    },
+    {
+      "id": "f_bb2c28",
+      "kind": "landmine",
+      "summary": "The repo now has TWO copies of the extension in the same git tree: the dev sources at the root (src/session.js, extensions/index.ts, scripts/, package.json, README.md) and the deliverable install at .pi/extensions/browser-tester/ (same files mirrored). Edits to the dev copy are NOT live in pi until ",
+      "detail": "The install copy resolves playwright through node_modules lookup walking up to the repo root, so no node_modules is copied. Future experience: keep the copies in sync or pi silently runs the stale one (this exact drift bit this repo before).",
+      "source": "01a0768d-7fa9-740c-8d3d-42ade47195c7:call_bb707d85510945799baa2725",
+      "touched": "2026-09-06T12:01:06.153Z",
+      "status": "active"
+    },
+    {
+      "id": "f_303e72",
+      "kind": "convention",
+      "summary": "Website-testing mode can't be proven by the cext_* tools during a live pi session (they run the pi-startup copy, not the edited file) — prove it with a standalone node script importing file:///…/src/session.js: launch({}) with NO extensionPath → assert info.extId === null → serve(fixtureDir) → open(",
+      "detail": "Regression trap: the old extId scan loop overwrote the extId=null reset with _scanExtId()'s undefined in plain mode and burned 10s polling — the fix guards the loop with if (this.extDir). A plain-mode launch must return extId null, not undefined.",
+      "source": "01a0768d-7fa9-740c-8d3d-42ade47195c7:call_7a6adceb36ef4cc1a5098823",
+      "touched": "2026-09-06T12:01:06.155Z",
+      "status": "active"
     }
   ]
 }
