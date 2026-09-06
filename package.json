@@ -1,6 +1,6 @@
 {
   "name": "browser-tester",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "pi extension: drive a real Playwright-driven Chromium from the coding agent — website testing and browser actions without any extension, plus full unpacked-Chrome-extension testing (popup flows, content scripts, service workers)",
   "type": "module",
   "keywords": ["pi-package", "browser", "e2e", "testing", "playwright", "chrome-extension"],
@@ -12,7 +12,6 @@
     "playwright": "^1.49.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
   },

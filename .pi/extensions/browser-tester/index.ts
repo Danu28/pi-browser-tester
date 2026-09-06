@@ -1,5 +1,4 @@
-// Canonical entry for pi (package.json "pi.extensions" points here, and drop-in
-// installs use this same index.ts). It re-exports the real implementation in
-// extensions/index.ts; pointing the manifest at the directory instead would make
-// pi name the extension after the folder ("extensions"), not the package.
-export { default } from "./extensions/index.ts";
+// Install shim: this directory is only pi's discoverable entry point.
+// The implementation lives once, at the repo root — do not copy sources in here
+// (two copies used to drift apart silently and pi ran the stale one).
+export { default } from "../../../extensions/index.ts";

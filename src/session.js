@@ -4,7 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -28,14 +28,10 @@ function loadPlaywright() {
     console.error(
       "[browser-tester] playwright package not found — running 'npm install' in the extension package to fetch it (one-time)."
     );
-    await runNpm(["install"], PKG_ROOT);
+    await runInShell("npm install", PKG_ROOT);
     return await import("playwright");
   })();
   return pwPromise;
-}
-
-function runNpm(args, cwd) {
-  return runInShell(`npm ${args.join(" ")}`, cwd);
 }
 
 // Run a command line through the platform shell. .cmd/.bat files cannot be
@@ -122,6 +118,7 @@ export class ChromeExtSession {
     this.serverDir = null;
     this.logEntries = [];
     this.logSeq = 0;
+    this._cdp = null;
   }
 
   _pushLog(source, level, text) {
@@ -183,6 +180,11 @@ export class ChromeExtSession {
     return undefined;
   }
 
+  // Chromium's ID: first 16 bytes of the SHA-256, hex mapped to the a-p alphabet.
+  _idFromBytes(bytes) {
+    return this._hexToId(createHash("sha256").update(bytes).digest("hex").slice(0, 32));
+  }
+
   // map hex chars to the extension alphabet: 0-9 -> a-j, a-f -> k-p
   _hexToId(hex) {
     return [...hex]
@@ -208,17 +210,12 @@ export class ChromeExtSession {
       // resolve() does not, so a lowercase drive would otherwise yield a wrong ID.
       dir = dir.charAt(0).toUpperCase() + dir.slice(1);
     }
-    const enc = process.platform === "win32" ? "utf16le" : "utf8";
-    return this._hexToId(
-      createHash("sha256").update(Buffer.from(dir, enc)).digest("hex").slice(0, 32)
-    );
+    return this._idFromBytes(Buffer.from(dir, process.platform === "win32" ? "utf16le" : "utf8"));
   }
 
   // manifest "key" (rare in dev): ID = SHA-256 of the base64-decoded key bytes.
   _extIdFromKey(key) {
-    return this._hexToId(
-      createHash("sha256").update(Buffer.from(key, "base64")).digest("hex").slice(0, 32)
-    );
+    return this._idFromBytes(Buffer.from(key, "base64"));
   }
 
   async _ensurePage() {
@@ -228,6 +225,13 @@ export class ChromeExtSession {
       this.activePage = pages.find((p) => !p.isClosed()) ?? (await this.context.newPage());
     }
     return this.activePage;
+  }
+
+  // Every action is the same three steps: resolve the active page, act, snapshot.
+  async _act(fn) {
+    const page = await this._ensurePage();
+    await fn(page);
+    return this._snapshot();
   }
 
   async _snapshot() {
@@ -253,23 +257,34 @@ export class ChromeExtSession {
     };
   }
 
-  // Best-effort sweep of stale temp profiles from crashed/abandoned sessions.
-  _sweepStaleProfiles() {
+  _readManifest() {
+    let raw;
     try {
-      const cutoff = Date.now() - 24 * 3600 * 1000;
-      for (const d of readdirSync(tmpdir())) {
-        if (!d.startsWith("cext-")) continue;
-        try {
-          if (statSync(join(tmpdir(), d)).mtimeMs < cutoff) {
-            rmSync(join(tmpdir(), d), { recursive: true, force: true });
-          }
-        } catch {}
-      }
-    } catch {}
+      raw = readFileSync(join(this.extDir, "manifest.json"), "utf8");
+    } catch {
+      throw new Error(`No manifest.json in extension path: ${this.extDir}`);
+    }
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`manifest.json in ${this.extDir} is not valid JSON: ${e.message}`);
+    }
   }
 
-  async launch({ extensionPath, url, headless = false, channel = "chromium", executablePath = undefined, cwd = process.cwd(), onProgress = () => {} }) {
-    this._sweepStaleProfiles();
+  // Prefer the real ID from a live chrome-extension:// target; fall back to
+  // deriving it for popup-only extensions that have no worker/page to scan.
+  async _resolveExtId(manifest) {
+    for (let i = 0; i < 50; i++) {
+      const id = this._scanExtId();
+      if (id) return id;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return typeof manifest.key === "string"
+      ? this._extIdFromKey(manifest.key)
+      : this._extIdFromPath(this.extDir);
+  }
+
+  async launch({ extensionPath, url, headless = false, channel = "chromium", cwd = process.cwd(), onProgress = () => {} }) {
     // No extensionPath = plain website-testing mode (no side-load flags below).
     this.extDir = extensionPath ? resolve(cwd, extensionPath) : null;
     // Resolve playwright (auto-installing the package into this extension's own
@@ -286,20 +301,7 @@ export class ChromeExtSession {
         );
       }
     }
-    let manifest = {};
-    if (this.extDir) {
-      let manifestRaw;
-      try {
-        manifestRaw = readFileSync(join(this.extDir, "manifest.json"), "utf8");
-      } catch {
-        throw new Error(`No manifest.json in extension path: ${this.extDir}`);
-      }
-      try {
-        manifest = JSON.parse(manifestRaw);
-      } catch (e) {
-        throw new Error(`manifest.json in ${this.extDir} is not valid JSON: ${e.message}`);
-      }
-    }
+    const manifest = this.extDir ? this._readManifest() : {};
     await this.close(); // relaunch = fresh state, also acts as "reload after edits"
     this.logEntries = [];
     this.logSeq = 0;
@@ -311,7 +313,6 @@ export class ChromeExtSession {
       this.context = await chromium.launchPersistentContext(this.userDataDir, {
         headless,
         ...(channel ? { channel } : {}),
-        ...(executablePath ? { executablePath } : {}),
         // Playwright's default args include --disable-extensions; drop it or
         // --load-extension below is a no-op.
         ignoreDefaultArgs: ["--disable-extensions"],
@@ -328,23 +329,8 @@ export class ChromeExtSession {
     }
     this._attachHooks();
 
-    // Wait briefly for the extension's service worker / background page to
-    // appear. Plain mode (no extension) has nothing to scan for: extId stays null.
-    if (this.extDir) {
-      for (let i = 0; i < 50 && !this.extId; i++) {
-        this.extId = this._scanExtId();
-        if (!this.extId) await new Promise((r) => setTimeout(r, 200));
-      }
-    }
-    if (!this.extId && this.extDir) {
-      // No service worker / background page (e.g. popup-only extension): derive
-      // the ID deterministically like Chromium does (a manifest "key" — rare in
-      // dev — overrides the path hash). Plain mode has no extension id at all.
-      this.extId =
-        typeof manifest.key === "string"
-          ? this._extIdFromKey(manifest.key)
-          : this._extIdFromPath(this.extDir);
-    }
+    // Plain mode (no extension) has nothing to scan: extId stays null.
+    if (this.extDir) this.extId = await this._resolveExtId(manifest);
 
     await this._ensurePage();
     if (url) await this.open(url);
@@ -420,15 +406,15 @@ export class ChromeExtSession {
   // Network.*, Emulation.*, …). target: "page" (default) or "browser".
   async cdp(method, params = {}, { target = "page" } = {}) {
     if (!this.context) throw new NotLaunchedError();
-    let session;
-    if (target === "browser") {
-      this._browserCdp ??= await this.context.browser().newBrowserCDPSession();
-      session = this._browserCdp;
-    } else {
-      const page = await this._ensurePage();
-      this._pageCdp ??= new WeakMap();
-      session = this._pageCdp.get(page) ?? (await this.context.newCDPSession(page));
-      this._pageCdp.set(page, session);
+    this._cdp ??= new Map();
+    const browser = target === "browser";
+    const key = browser ? "browser" : await this._ensurePage();
+    let session = this._cdp.get(key);
+    if (!session) {
+      session = browser
+        ? await this.context.browser().newBrowserCDPSession()
+        : await this.context.newCDPSession(key);
+      this._cdp.set(key, session);
     }
     return session.send(method, params);
   }
@@ -436,11 +422,7 @@ export class ChromeExtSession {
   async popup() {
     if (!this.context) throw new NotLaunchedError();
     if (!this.extDir) throw new Error("No extension loaded — launch with extensionPath to test a popup");
-    let manifest = {};
-    try {
-      manifest = JSON.parse(readFileSync(join(this.extDir, "manifest.json"), "utf8"));
-    } catch {}
-    const popupPath = manifest.action?.default_popup;
+    const popupPath = this._readManifest().action?.default_popup;
     if (!popupPath) throw new Error(`No action.default_popup in manifest`);
     const prev = this.activePage && !this.activePage.isClosed() ? this.activePage : null;
     const page = await this.context.newPage();
@@ -466,6 +448,7 @@ export class ChromeExtSession {
   }
 
   async switchPage(index) {
+    if (!this.context) throw new NotLaunchedError();
     const pages = this.context.pages().filter((p) => !p.isClosed());
     const page = pages[index];
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
@@ -478,47 +461,43 @@ export class ChromeExtSession {
   }
 
   async click(selector, { index = 0, timeout = 5000 } = {}) {
-    const page = await this._ensurePage();
-    const loc = page.locator(selector);
-    await (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
-    return this._snapshot();
+    return this._act((page) => {
+      const loc = page.locator(selector);
+      return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
+    });
   }
 
   async fill(selector, value, { timeout = 5000 } = {}) {
-    const page = await this._ensurePage();
-    await page.locator(selector).first().fill(value, { timeout });
-    return this._snapshot();
+    return this._act((page) => page.locator(selector).first().fill(value, { timeout }));
   }
 
   async hover(selector, { timeout = 5000 } = {}) {
-    const page = await this._ensurePage();
-    await page.locator(selector).first().hover({ timeout });
-    return this._snapshot();
+    return this._act((page) => page.locator(selector).first().hover({ timeout }));
   }
 
   // Dropdowns: plain string matches the option's value attribute; options
   // without a value store their text as value, so retry with {label}.
   async select(selector, value, { timeout = 5000 } = {}) {
-    const page = await this._ensurePage();
-    const loc = page.locator(selector).first();
-    await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
-    return this._snapshot();
+    return this._act(async (page) => {
+      const loc = page.locator(selector).first();
+      await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
+    });
   }
 
   // Keyboard: with a selector, focus the element first then press; without,
   // press globally on the page (Tab to walk focus for a11y testing, Escape, …).
   async press(selector, key, { timeout = 5000 } = {}) {
-    const page = await this._ensurePage();
-    if (selector) await page.locator(selector).first().press(key, { timeout });
-    else await page.keyboard.press(key);
-    return this._snapshot();
+    return this._act((page) =>
+      selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)
+    );
   }
 
   async history(direction) {
-    const page = await this._ensurePage();
-    if (direction === "back") await page.goBack({ waitUntil: "domcontentloaded" });
-    else await page.goForward({ waitUntil: "domcontentloaded" });
-    return this._snapshot();
+    return this._act((page) =>
+      direction === "back"
+        ? page.goBack({ waitUntil: "domcontentloaded" })
+        : page.goForward({ waitUntil: "domcontentloaded" })
+    );
   }
 
   // Site-testing measurements: navigation timings (ms after navigation start),

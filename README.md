@@ -17,6 +17,9 @@ All tools are `cext_*` (kept from the extension-testing origin).
   `~/.pi/agent/extensions/browser-tester/` (global) or
   `<project>/.pi/extensions/browser-tester/` (project-local; auto-discovery
   uses `index.ts` — no config needed).
+- Inside this repo that project-local copy is only a shim: a `package.json` plus
+  an `index.ts` re-exporting `../../../extensions/index.ts`. Never copy sources
+  there — two copies drift apart and pi silently runs the stale one.
 - First `cext_launch` auto-installs the playwright package (into this folder's
   `node_modules`) and downloads Chromium (~170 MB) if missing. `npm run
   install-browser` does the browser download alone.
