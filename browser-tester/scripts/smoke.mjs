@@ -148,9 +148,7 @@ s3.activePage = fakePage;
 s3.click = async (sel, o) => { calls.push(["click", sel, o]); return { ok: true }; };
 s3.fill = async (sel, v, o) => { calls.push(["fill", sel, v, o]); return { ok: true }; };
 
-assert.equal((await s3._snapshot({ dedupe: true })).bodyText, "hello");
-assert.match((await s3._snapshot({ dedupe: true })).bodyText, /^\(unchanged/);
-assert.equal((await s3.snapshot()).bodyText, "hello", "explicit cext_snapshot must still return the full text");
+assert.equal((await s3.snapshot()).bodyText, "hello", "cext_snapshot returns the full body text");
 
 const batched = await s3.batch([
   { op: "click", selector: "#save" },
@@ -159,7 +157,7 @@ const batched = await s3.batch([
   { op: "nope" },
   { op: "click", selector: "#never" },
 ]);
-assert.deepEqual(calls[0][2], { index: 0, timeout: 5000, snapshot: false }, "batch steps must skip the snapshot");
+assert.deepEqual(calls[0][2], { index: 0, timeout: 5000 }, "batch steps pass only the op's own options");
 assert.equal(batched.results.length, 4, "stopOnError stops at the failing step");
 assert.equal(batched.stoppedAt, 3);
 assert.match(batched.results[3].error, /^unknown batch op: nope/);
@@ -183,29 +181,10 @@ assert.equal((await s4.screenshot()).data, null);
 assert.match((await s4.screenshot()).path, /\.png$/);
 assert.equal((await s4.screenshot({ inline: true })).data, Buffer.from("png").toString("base64"));
 
-// 11. cost: a page that changed in one place must ship only the changed lines
-//     (not the whole body text again), and eval must not pretty-print.
-const s5 = new ChromeExtSession();
-let body = "a\nb\nc\nd\ne";
-const changing = { ...fakePage, evaluate: async () => body };
-s5.context = { pages: () => [changing] };
-s5.activePage = changing;
-assert.equal((await s5._snapshot({ dedupe: true })).bodyText, "a\nb\nc\nd\ne", "first snapshot is full");
-body = "a\nb\nC\nd\ne";
-assert.equal(
-  (await s5._snapshot({ dedupe: true })).bodyText,
-  "… 2 unchanged line(s) above — call cext_snapshot for the full text …\nC\n… 2 unchanged line(s) below …"
-);
-body = "totally different page";
-assert.equal(
-  (await s5._snapshot({ dedupe: true })).bodyText,
-  "totally different page",
-  "nothing in common -> full text, no marker noise"
-);
-
+// 11. eval must not pretty-print: indentation is characters the model does not read
 const s6 = new ChromeExtSession();
 s6.activePage = { ...fakePage, evaluate: async () => ({ a: 1, b: [2] }) };
 s6.context = { pages: () => [s6.activePage] };
 assert.equal((await s6.eval("x")).result, '{"a":1,"b":[2]}', "eval must not pretty-print");
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline + changed-lines diff + compact eval");
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload relaunch + batch one-liners + screenshot inline + compact eval");

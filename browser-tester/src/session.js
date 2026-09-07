@@ -86,29 +86,6 @@ export class NotLaunchedError extends Error {
   }
 }
 
-// Positional line diff: keep the common head and tail, ship only the changed
-// middle. A click that bumps one counter otherwise re-sends the whole 12k body.
-// ponytail: prefix/suffix only, not LCS — a line that MOVED reads as changed.
-function changedLinesOnly(prev, next) {
-  let head = 0;
-  while (head < prev.length && head < next.length && prev[head] === next[head]) head++;
-  let tail = 0;
-  while (
-    tail < prev.length - head &&
-    tail < next.length - head &&
-    prev[prev.length - 1 - tail] === next[next.length - 1 - tail]
-  )
-    tail++;
-  const changed = next.slice(head, next.length - tail);
-  // Not worth the marker noise unless it actually cuts the payload.
-  if (changed.length > next.length * 0.75) return next.join("\n");
-  const out = [];
-  if (head) out.push(`… ${head} unchanged line(s) above — call cext_snapshot for the full text …`);
-  out.push(...changed);
-  if (tail) out.push(`… ${tail} unchanged line(s) below …`);
-  return out.join("\n");
-}
-
 // Chromium launch flags: extension-testing mode adds the side-load flags, plain
 // website-testing mode (launch without extensionPath) gets a vanilla browser.
 export function launchArgs(extDir) {
@@ -175,8 +152,6 @@ export class ChromeExtSession {
     this.logEntries = [];
     this.logSeq = 0;
     this._cdp = null;
-    this._lastBodyHash = null;
-    this._lastBodyLines = null;
   }
 
   _pushLog(source, level, text) {
@@ -276,38 +251,26 @@ export class ChromeExtSession {
     return this.activePage;
   }
 
-  // Every action is the same three steps: resolve the active page, act, snapshot.
-  // snapshot:false returns a one-liner instead — batch runs use it so N steps do
-  // not ship the same body text N times.
-  async _act(fn, { snapshot = true } = {}) {
+  // Every action ends with the same one line — url + title, no body text.
+  // cext_snapshot and batch({snapshot:true}) are the only readers of page text,
+  // so a 12-step flow does not pay for 12 copies of it.
+  async _act(fn) {
     const page = await this._ensurePage();
     await fn(page);
-    return snapshot ? this._snapshot({ dedupe: true }) : { ok: true, url: page.url() };
+    return this._result(page);
   }
 
-  async _snapshot({ dedupe = false } = {}) {
+  async _result(page) {
+    return { url: page.url(), title: await page.title().catch(() => "") };
+  }
+
+  async _snapshot() {
     const page = await this._ensurePage();
     let bodyText = "";
     try {
       bodyText = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, MAX_TEXT);
     } catch {
       // non-HTML content (json/xml/pdf) — no body text
-    }
-    // Cost: an action that did not change the page was returning the same 12k
-    // chars again — and one that changed a single number returned all of it too.
-    // Collapse both: identical text -> a marker, small change -> only the
-    // changed lines. An explicit cext_snapshot (dedupe:false) still gets the
-    // full text.
-    const lines = bodyText.split("\n");
-    const hash = createHash("sha1").update(bodyText).digest("hex");
-    const unchanged = hash === this._lastBodyHash;
-    const prevLines = this._lastBodyLines;
-    this._lastBodyHash = hash;
-    this._lastBodyLines = lines;
-    if (dedupe && unchanged) {
-      bodyText = "(unchanged — same body text as the previous snapshot; call cext_snapshot to read it again)";
-    } else if (dedupe && prevLines) {
-      bodyText = changedLinesOnly(prevLines, lines);
     }
     // Index by object identity, not URL: two tabs on the same URL (common after
     // an extension opens a tab of its own) must not report the wrong active one.
@@ -372,8 +335,6 @@ export class ChromeExtSession {
     await this.close(); // relaunch = fresh state, also acts as "reload after edits"
     this.logEntries = [];
     this.logSeq = 0;
-    this._lastBodyHash = null;
-    this._lastBodyLines = null;
     this.extId = null;
     this.artifactsDir = join(cwd, "artifacts");
     mkdirSync(this.artifactsDir, { recursive: true });
@@ -440,7 +401,7 @@ export class ChromeExtSession {
     const page = newTab ? await ctx.newPage() : await this._ensurePage();
     if (newTab) this.activePage = page;
     await page.goto(url, { waitUntil });
-    return this._snapshot();
+    return this._result(page);
   }
 
   // Close one page (e.g. the marketing tab an extension opens on install) so it
@@ -451,7 +412,7 @@ export class ChromeExtSession {
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
     await page.close();
     if (this.activePage === page) this.activePage = null;
-    return this._snapshot();
+    return this._result(await this._ensurePage());
   }
 
   // Reload the extension after a source edit. A side-loaded unpacked extension
@@ -504,7 +465,7 @@ export class ChromeExtSession {
     await page.goto(`chrome-extension://${this.extId}/${popupPath}`, {
       waitUntil: "domcontentloaded",
     });
-    return this._snapshot();
+    return this._result(page);
   }
 
   async switchPage(index) {
@@ -512,49 +473,43 @@ export class ChromeExtSession {
     const page = pages[index];
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
     this.activePage = page;
-    return this._snapshot();
+    return this._result(page);
   }
 
   async snapshot() {
     return this._snapshot();
   }
 
-  async click(selector, { index = 0, timeout = 5000, snapshot = true } = {}) {
-    return this._act(
-      (page) => {
-        const loc = page.locator(selector);
-        return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
-      },
-      { snapshot }
-    );
+  async click(selector, { index = 0, timeout = 5000 } = {}) {
+    return this._act((page) => {
+      const loc = page.locator(selector);
+      return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
+    });
   }
 
-  async fill(selector, value, { timeout = 5000, snapshot = true } = {}) {
-    return this._act((page) => page.locator(selector).first().fill(value, { timeout }), { snapshot });
+  async fill(selector, value, { timeout = 5000 } = {}) {
+    return this._act((page) => page.locator(selector).first().fill(value, { timeout }));
   }
 
-  async hover(selector, { timeout = 5000, snapshot = true } = {}) {
-    return this._act((page) => page.locator(selector).first().hover({ timeout }), { snapshot });
+  async hover(selector, { timeout = 5000 } = {}) {
+    return this._act((page) => page.locator(selector).first().hover({ timeout }));
   }
 
   // Dropdowns: plain string matches the option's value attribute; options
   // without a value store their text as value, so retry with {label}.
-  async select(selector, value, { timeout = 5000, snapshot = true } = {}) {
-    return this._act(
-      async (page) => {
-        const loc = page.locator(selector).first();
-        await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
-      },
-      { snapshot }
-    );
+  // ponytail: a genuinely missing option therefore costs 2x timeout.
+  async select(selector, value, { timeout = 5000 } = {}) {
+    return this._act(async (page) => {
+      const loc = page.locator(selector).first();
+      await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
+    });
   }
 
   // Keyboard: with a selector, focus the element first then press; without,
   // press globally on the page (Tab to walk focus for a11y testing, Escape, …).
-  async press(selector, key, { timeout = 5000, snapshot = true } = {}) {
-    return this._act(
-      (page) => (selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)),
-      { snapshot }
+  async press(selector, key, { timeout = 5000 } = {}) {
+    return this._act((page) =>
+      selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)
     );
   }
 
@@ -574,14 +529,9 @@ export class ChromeExtSession {
     const failed = results.find((r) => r.error);
     return {
       results,
-      final: snapshot ? await this._snapshot() : await this._mini(),
+      final: snapshot ? await this._snapshot() : await this._result(await this._ensurePage()),
       stoppedAt: failed && stopOnError ? failed.i : null,
     };
-  }
-
-  async _mini() {
-    const page = await this._ensurePage();
-    return { url: page.url(), title: await page.title().catch(() => "") };
   }
 
   // Every case returns the one line batch prints for it: { result }.
@@ -589,19 +539,15 @@ export class ChromeExtSession {
     const timeout = step.timeout ?? 5000;
     switch (step.op) {
       case "click":
-        return this.click(step.selector, { index: step.index ?? 0, timeout, snapshot: false }).then(() => ({
-          result: "ok",
-        }));
+        return this.click(step.selector, { index: step.index ?? 0, timeout }).then(() => ({ result: "ok" }));
       case "fill":
-        return this.fill(step.selector, step.value ?? "", { timeout, snapshot: false }).then(() => ({
-          result: "ok",
-        }));
+        return this.fill(step.selector, step.value ?? "", { timeout }).then(() => ({ result: "ok" }));
       case "press":
-        return this.press(step.selector, step.key, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
+        return this.press(step.selector, step.key, { timeout }).then(() => ({ result: "ok" }));
       case "select":
-        return this.select(step.selector, step.value, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
+        return this.select(step.selector, step.value, { timeout }).then(() => ({ result: "ok" }));
       case "hover":
-        return this.hover(step.selector, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
+        return this.hover(step.selector, { timeout }).then(() => ({ result: "ok" }));
       case "scroll":
         return this.scroll({ selector: step.selector, to: step.to, x: step.x ?? 0, y: step.y ?? 0, timeout }).then(
           (r) => ({ result: `x=${r.x} y=${r.y}` })
