@@ -5,9 +5,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { ChromeExtSession, DEPS, NotLaunchedError, launchArgs } from "../src/session.js";
+import { join } from "node:path";
+import { ChromeExtSession, NotLaunchedError, launchArgs } from "../src/session.js";
 
 const s = new ChromeExtSession();
 
@@ -120,43 +119,19 @@ s2.context.emit("requestfailed", {
 assert.match(s2.logEntries.at(-2).text, /^HTTP 404 GET http:\/\/x\/a$/);
 assert.match(s2.logEntries.at(-1).text, /^POST http:\/\/x\/b . net::ERR_BLOCKED$/);
 
-// 8. cext_reload: fast path when the worker respawns, browser relaunch when it
-//    does not. Reporting a reload that left the extension dead made every
-//    chrome-extension:// URL fail with ERR_BLOCKED_BY_CLIENT.
-const reloadSession = (respawns) => {
-  const r = new ChromeExtSession();
-  let reloading = false; // set by the reload itself: the worker is gone from then on
-  const worker = {
-    url: () => "chrome-extension://abc/sw.js",
-    evaluate: async () => {
-      reloading = true;
-    },
-  };
-  r.context = {
-    serviceWorkers: () => (!reloading || respawns ? [worker] : []),
-    backgroundPages: () => [],
-  };
-  r.launchOpts = { extensionPath: "C:\\ext", headless: false, channel: "chromium", cwd: process.cwd() };
-  r.launch = async (opts) => {
-    r.relaunchedWith = opts;
-    return {};
-  };
-  return r;
+// 8. cext_reload: a side-loaded unpacked extension never respawns its service
+//    worker, so reloading IS a relaunch with the original options — reporting a
+//    reload that left the extension dead made every chrome-extension:// URL
+//    fail with ERR_BLOCKED_BY_CLIENT (and used to cost a 4s wait first).
+const s7 = new ChromeExtSession();
+await assert.rejects(() => s7.reloadExtension(), NotLaunchedError, "reload before any launch must say so");
+s7.launchOpts = { extensionPath: "C:\\ext", headless: false, channel: "chromium", cwd: process.cwd() };
+s7.launch = async (opts) => {
+  s7.relaunchedWith = opts;
+  return { serviceWorkers: [] };
 };
-
-const respawned = reloadSession(true);
-assert.deepEqual(await respawned.reloadExtension({ waitMs: 50 }), {
-  reloaded: true,
-  fallback: null,
-  serviceWorkers: ["chrome-extension://abc/sw.js"],
-  backgroundPages: [],
-});
-assert.equal(respawned.relaunchedWith, undefined, "respawned worker must not trigger a relaunch");
-
-const never = reloadSession(false);
-const relaunched = await never.reloadExtension({ waitMs: 50 });
-assert.equal(relaunched.fallback, "relaunch");
-assert.equal(never.relaunchedWith.extensionPath, "C:\\ext", "fallback must relaunch with the original options");
+await s7.reloadExtension();
+assert.deepEqual(s7.relaunchedWith, s7.launchOpts, "reload must relaunch with the original options");
 
 // 9. cost: actions must not re-ship an unchanged body text, and batch must run
 //    N steps without N snapshots (that is the whole point of cext_batch).
@@ -233,13 +208,4 @@ s6.activePage = { ...fakePage, evaluate: async () => ({ a: 1, b: [2] }) };
 s6.context = { pages: () => [s6.activePage] };
 assert.equal((await s6.eval("x")).result, '{"a":1,"b":[2]}', "eval must not pretty-print");
 
-// 12. deps must live outside this package: a global install is a throwaway copy
-//     (~/.pi/agent/extensions/browser-tester, deleted on every re-install), so
-//     anything installed inside it is re-downloaded on the next launch.
-const pkgDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
-assert.ok(
-  !resolve(DEPS).startsWith(pkgDir + sep) && resolve(DEPS) !== pkgDir,
-  `deps dir ${DEPS} must not be inside the extension package ${pkgDir}`
-);
-
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline + changed-lines diff + compact eval + deps outside package");
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline + changed-lines diff + compact eval");

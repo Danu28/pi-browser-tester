@@ -410,13 +410,13 @@ const tools: {
     name: "cext_reload",
     label: "Reload Extension",
     description:
-      "Reload the loaded extension (chrome.runtime.reload()) without relaunching the browser — the fast way to pick up source edits. Falls back to a full browser relaunch when no service worker respawns (Chrome does not respawn one for a side-loaded unpacked extension), so the extension is always usable afterwards.",
+      "Pick up extension source edits: relaunches the browser with the same extension path and options. Chrome never respawns a side-loaded unpacked extension's service worker, so chrome.runtime.reload() would leave every chrome-extension:// URL dead — a relaunch is the reload.",
     promptSnippet: "Reload the extension after editing its source",
     parameters: Type.Object({}),
     run: () =>
       session.reloadExtension().then((r) =>
         text(
-          `extension reloaded${r.fallback ? " (via browser relaunch — no service worker respawned)" : ""}\nservice workers: ${r.serviceWorkers.join(", ") || "none"}`,
+          `extension reloaded (browser relaunch — a side-loaded extension's service worker never respawns)\nservice workers: ${r.serviceWorkers.join(", ") || "none"}`,
           { r }
         )
       ),

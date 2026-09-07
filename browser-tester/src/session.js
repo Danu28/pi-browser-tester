@@ -2,28 +2,32 @@
 // Playwright-only: no pi imports, so scripts/smoke.mjs can prove it end to end
 // without pi. The pi extension (index.ts) wraps this in tools.
 
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Root of this package (one level up from src/).
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Shared, persistent home for the playwright package — deliberately OUTSIDE the
-// package, because a global install is a throwaway copy (~/.pi/agent/extensions/
-// browser-tester, deleted and re-copied by install.bat). Deps living there would
-// be wiped on every re-install and re-downloaded on the next launch.
-export const DEPS = join(homedir(), ".browser-tester");
-const depsRequire = createRequire(pathToFileURL(join(DEPS, "deps.cjs")));
+// playwright is an ordinary global npm package, so this extension folder stays
+// dependency-free and nothing is ever installed inside it (a global install is a
+// throwaway copy: install.bat deletes and re-copies it). Node does not search
+// the global node_modules dir, so ask npm where it is.
+function npmGlobalRoot() {
+  try {
+    return execSync("npm root -g", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
+}
 
-// Resolve the playwright package, lazily: wherever node already finds it (repo
-// install, copy-local node_modules), else the shared DEPS dir, and only then
-// install into DEPS once.
+// Resolve the playwright package, lazily: node's own lookup (repo dev install),
+// then the global install, then install it globally like any npm package.
 let pwPromise;
 function loadPlaywright() {
   pwPromise ??= (async () => {
@@ -31,19 +35,13 @@ function loadPlaywright() {
       return await import("playwright");
     } catch {}
     try {
-      return depsRequire("playwright");
+      if (npmGlobalRoot()) return createRequire(pathToFileURL(join(npmGlobalRoot(), "x.cjs")))("playwright");
     } catch {}
     console.error(
-      `[browser-tester] playwright package not found — installing it into ${DEPS} (one-time, shared by every copy of this extension).`
+      "[browser-tester] playwright package not found — installing it globally with 'npm install -g playwright' (one-time)."
     );
-    mkdirSync(DEPS, { recursive: true });
-    const range = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).dependencies.playwright;
-    writeFileSync(
-      join(DEPS, "package.json"),
-      JSON.stringify({ name: "browser-tester-deps", private: true, dependencies: { playwright: range } })
-    );
-    await runInShell("npm install", DEPS);
-    return depsRequire("playwright");
+    await runInShell("npm install -g playwright");
+    return createRequire(pathToFileURL(join(npmGlobalRoot(), "x.cjs")))("playwright");
   })();
   return pwPromise;
 }
@@ -64,14 +62,15 @@ async function runInShell(cmd, cwd, extraEnv = {}) {
 
 const PLAYWRIGHT_DIR = process.platform === "win32" ? "%LOCALAPPDATA%/ms-playwright" : "~/.cache/ms-playwright";
 
+// Cap on every blob of text headed back to the model (body text, eval output).
+const MAX_TEXT = 12000;
+
 export class NotLaunchedError extends Error {
   constructor() {
     super("Browser not launched. Call cext_launch first.");
     this.name = "NotLaunchedError";
   }
 }
-
-const EXT_ID_RE = /chrome-extension:\/\/([a-p]{32})\//;
 
 // Positional line diff: keep the common head and tail, ship only the changed
 // middle. A click that bumps one counter otherwise re-sends the whole 12k body.
@@ -113,12 +112,13 @@ export async function installChromium() {
       "This happens once; it may take a few minutes on slow links."
   );
   try {
-    // Run where playwright actually lives so npx picks up the local CLI instead
-    // of fetching one — DEPS after the one-time install, else the package dir.
+    // Run from the npm global prefix when playwright is installed globally, so
+    // npx picks up that CLI instead of fetching one; else the package dir.
     // 600s timeout: playwright's default 30s is too short on slow links.
+    const root = npmGlobalRoot();
     await runInShell(
       "npx playwright install chromium",
-      existsSync(join(DEPS, "node_modules", "playwright")) ? DEPS : PKG_ROOT,
+      root && existsSync(join(root, "playwright")) ? dirname(root) : PKG_ROOT,
       {
         PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "600000",
       }
@@ -153,6 +153,7 @@ export class ChromeExtSession {
     this.activePage = null;
     this.extId = null;
     this.extDir = null;
+    this.manifest = null;
     this.artifactsDir = null;
     this.userDataDir = null;
     this.server = null;
@@ -208,21 +209,6 @@ export class ChromeExtSession {
     });
   }
 
-  _scanExtId() {
-    const ctx = this.context;
-    if (!ctx) return undefined;
-    const candidates = [
-      ...ctx.serviceWorkers().map((sw) => sw.url()),
-      ...ctx.backgroundPages().map((p) => p.url()),
-      ...ctx.pages().map((p) => p.url()),
-    ];
-    for (const url of candidates) {
-      const m = EXT_ID_RE.exec(url);
-      if (m) return m[1];
-    }
-    return undefined;
-  }
-
   // Chromium's ID: first 16 bytes of the SHA-256, hex mapped to the a-p alphabet.
   _idFromBytes(bytes) {
     return this._hexToId(createHash("sha256").update(bytes).digest("hex").slice(0, 32));
@@ -261,11 +247,17 @@ export class ChromeExtSession {
     return this._idFromBytes(Buffer.from(key, "base64"));
   }
 
-  async _ensurePage() {
+  // Every op that needs a browser starts here, so "not launched" has one wording.
+  _ctx() {
     if (!this.context) throw new NotLaunchedError();
+    return this.context;
+  }
+
+  async _ensurePage() {
+    const ctx = this._ctx();
     if (!this.activePage || this.activePage.isClosed()) {
-      const pages = this.context.pages();
-      this.activePage = pages.find((p) => !p.isClosed()) ?? (await this.context.newPage());
+      const pages = ctx.pages();
+      this.activePage = pages.find((p) => !p.isClosed()) ?? (await ctx.newPage());
     }
     return this.activePage;
   }
@@ -283,7 +275,7 @@ export class ChromeExtSession {
     const page = await this._ensurePage();
     let bodyText = "";
     try {
-      bodyText = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, 12000);
+      bodyText = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, MAX_TEXT);
     } catch {
       // non-HTML content (json/xml/pdf) — no body text
     }
@@ -332,14 +324,11 @@ export class ChromeExtSession {
     }
   }
 
-  // Prefer the real ID from a live chrome-extension:// target; fall back to
-  // deriving it for popup-only extensions that have no worker/page to scan.
-  async _resolveExtId(manifest) {
-    for (let i = 0; i < 50; i++) {
-      const id = this._scanExtId();
-      if (id) return id;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+  // Chromium derives an unpacked extension's ID from its absolute path
+  // (id_util.cc GenerateIdForPath); a manifest "key" overrides it. Computing it
+  // beats scanning live chrome-extension:// targets for one, which cost up to
+  // 10s of polling for popup-only extensions that expose nothing to scan.
+  _resolveExtId(manifest) {
     return typeof manifest.key === "string"
       ? this._extIdFromKey(manifest.key)
       : this._extIdFromPath(this.extDir);
@@ -364,7 +353,8 @@ export class ChromeExtSession {
         );
       }
     }
-    const manifest = this.extDir ? this._readManifest() : {};
+    // Read once: popup() and the ID derivation below both need it.
+    this.manifest = this.extDir ? this._readManifest() : {};
     await this.close(); // relaunch = fresh state, also acts as "reload after edits"
     this.logEntries = [];
     this.logSeq = 0;
@@ -395,7 +385,7 @@ export class ChromeExtSession {
     this._attachHooks();
 
     // Plain mode (no extension) has nothing to scan: extId stays null.
-    if (this.extDir) this.extId = await this._resolveExtId(manifest);
+    if (this.extDir) this.extId = this._resolveExtId(this.manifest);
 
     await this._ensurePage();
     if (url) await this.open(url);
@@ -404,7 +394,7 @@ export class ChromeExtSession {
     return {
       extId: this.extId,
       extDir: this.extDir,
-      popupPath: manifest.action?.default_popup ?? null,
+      popupPath: this.manifest.action?.default_popup ?? null,
       serviceWorkers: workers.map((w) => w.url()),
       backgroundPages: this.context.backgroundPages().map((p) => p.url()),
       page: this.activePage.url(),
@@ -432,8 +422,8 @@ export class ChromeExtSession {
   }
 
   async open(url, { newTab = false, waitUntil = "domcontentloaded" } = {}) {
-    if (!this.context) throw new NotLaunchedError();
-    const page = newTab ? await this.context.newPage() : await this._ensurePage();
+    const ctx = this._ctx();
+    const page = newTab ? await ctx.newPage() : await this._ensurePage();
     if (newTab) this.activePage = page;
     await page.goto(url, { waitUntil });
     return this._snapshot();
@@ -442,8 +432,7 @@ export class ChromeExtSession {
   // Close one page (e.g. the marketing tab an extension opens on install) so it
   // stops confusing active-tab resolution, without tearing down the session.
   async closePage(index) {
-    if (!this.context) throw new NotLaunchedError();
-    const pages = this.context.pages().filter((p) => !p.isClosed());
+    const pages = this._ctx().pages().filter((p) => !p.isClosed());
     const page = index == null ? await this._ensurePage() : pages[index];
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
     await page.close();
@@ -451,67 +440,38 @@ export class ChromeExtSession {
     return this._snapshot();
   }
 
-  // Reload just the extension (chrome.runtime.reload() in its own worker/page)
-  // instead of relaunching the whole browser after every source edit.
-  async reloadExtension({ waitMs = 4000 } = {}) {
-    if (!this.context) throw new NotLaunchedError();
-    const target = this.context.serviceWorkers()[0] ?? this.context.backgroundPages()[0];
-    if (!target) throw new Error("No service worker or background page — nothing to reload");
-    // reload() tears down the worker, so the evaluate call itself rejects.
-    await target.evaluate(() => chrome.runtime.reload()).catch(() => {});
-    const targets = () => ({
-      serviceWorkers: this.context.serviceWorkers().map((w) => w.url()),
-      backgroundPages: this.context.backgroundPages().map((p) => p.url()),
-    });
-    // A reload that leaves no live worker behind is not a reload: every
-    // chrome-extension:// URL then fails with ERR_BLOCKED_BY_CLIENT. Chrome
-    // never respawns the worker under --load-extension, so relaunch the browser
-    // with the same options rather than reporting a reload that didn't happen.
-    const deadline = Date.now() + waitMs;
-    while (Date.now() < deadline) {
-      if (await this._extensionAlive()) {
-        return { reloaded: true, fallback: null, ...targets() };
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    await this.launch({ ...this.launchOpts });
-    return { reloaded: true, fallback: "relaunch", ...targets() };
-  }
-
-  // "Is there a worker?" lies right after a reload: Playwright keeps the torn
-  // down handle for a moment (evaluate then fails with "Service worker
-  // restarted"). Only an evaluate() that resolves proves the extension is back.
-  async _extensionAlive() {
-    for (const w of [...this.context.serviceWorkers(), ...this.context.backgroundPages()]) {
-      if (await w.evaluate(() => 1).then(() => true, () => false)) return true;
-    }
-    return false;
+  // Reload the extension after a source edit. A side-loaded unpacked extension
+  // never respawns its service worker, so chrome.runtime.reload() leaves every
+  // chrome-extension:// URL dead (ERR_BLOCKED_BY_CLIENT): the only reload that
+  // leaves a usable extension is a relaunch with the same options. Do that
+  // directly instead of waiting for a worker that never comes.
+  async reloadExtension() {
+    if (!this.launchOpts) throw new NotLaunchedError();
+    return this.launch(this.launchOpts);
   }
 
   // Escape hatch: raw CDP for anything the tool set does not wrap (permissions,
   // Network.*, Emulation.*, …). target: "page" (default) or "browser".
   async cdp(method, params = {}, { target = "page" } = {}) {
-    if (!this.context) throw new NotLaunchedError();
+    const ctx = this._ctx();
     this._cdp ??= new Map();
     const browser = target === "browser";
     const key = browser ? "browser" : await this._ensurePage();
     let session = this._cdp.get(key);
     if (!session) {
-      session = browser
-        ? await this.context.browser().newBrowserCDPSession()
-        : await this.context.newCDPSession(key);
+      session = browser ? await ctx.browser().newBrowserCDPSession() : await ctx.newCDPSession(key);
       this._cdp.set(key, session);
     }
     return session.send(method, params);
   }
 
   async popup() {
-    if (!this.context) throw new NotLaunchedError();
+    const ctx = this._ctx();
     if (!this.extDir) throw new Error("No extension loaded — launch with extensionPath to test a popup");
-    const popupPath = this._readManifest().action?.default_popup;
+    const popupPath = this.manifest?.action?.default_popup;
     if (!popupPath) throw new Error(`No action.default_popup in manifest`);
     const prev = this.activePage && !this.activePage.isClosed() ? this.activePage : null;
-    const page = await this.context.newPage();
+    const page = await ctx.newPage();
     // A real action popup floats over the page without stealing its "active
     // tab" status, so chrome.tabs.query({active, lastFocusedWindow}) inside the
     // popup resolves to the host tab. Playwright's popup is just another tab in
@@ -534,8 +494,7 @@ export class ChromeExtSession {
   }
 
   async switchPage(index) {
-    if (!this.context) throw new NotLaunchedError();
-    const pages = this.context.pages().filter((p) => !p.isClosed());
+    const pages = this._ctx().pages().filter((p) => !p.isClosed());
     const page = pages[index];
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
     this.activePage = page;
@@ -726,7 +685,7 @@ export class ChromeExtSession {
     } catch {
       text = String(raw);
     }
-    return { result: text.slice(0, 12000), type: raw === null ? "null" : typeof raw };
+    return { result: text.slice(0, MAX_TEXT), type: raw === null ? "null" : typeof raw };
   }
 
   async wait(selector, { timeout = 5000, state = "visible", text = undefined } = {}) {
