@@ -8,7 +8,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { ChromeExtSession, NotLaunchedError } from "./src/session.js";
+import { ChromeExtSession, NotLaunchedError, OPS, stepLine } from "./src/session.js";
 
 const session = new ChromeExtSession();
 
@@ -27,13 +27,14 @@ const selector = (description: string) => Type.String({ description });
 // One cext_batch step. Every op maps to an existing session method; unknown
 // keys are ignored by the runner, unknown ops fail the step with a clear list.
 const batchStep = Type.Object({
-  op: oneOf(
-    ["click", "fill", "press", "select", "hover", "wait", "open", "switch", "closePage", "eval", "screenshot", "logs", "metrics"],
-    "Operation to run"
-  ),
+  op: oneOf(OPS, "Operation to run"),
   selector: Type.Optional(selector("Playwright selector (click/fill/press/select/hover/wait/screenshot)")),
   value: Type.Optional(Type.String({ description: "Value for fill, or option value/label for select" })),
   key: Type.Optional(Type.String({ description: "Key for press, e.g. 'Enter' or 'Control+a'" })),
+  to: Type.Optional(oneOf(["top", "bottom"], "For scroll: scroll to the top or bottom of the page")),
+  x: Type.Optional(Type.Integer({ description: "For scroll: horizontal scroll delta in px" })),
+  y: Type.Optional(Type.Integer({ description: "For scroll: vertical scroll delta in px" })),
+  direction: Type.Optional(oneOf(["back", "forward"], "For history: which way to navigate")),
   text: Type.Optional(Type.String({ description: "For wait: wait for this visible text instead of a selector" })),
   url: Type.Optional(Type.String({ description: "For open: URL to navigate to" })),
   index: Type.Optional(Type.Integer({ description: "0-based element index for click, or page index for switch/closePage" })),
@@ -59,25 +60,10 @@ const snapText = (s: any) =>
 
 const snap = (s: any) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } });
 
-// One line per batch step: the whole point of cext_batch is a compact result.
-const batchLine = (r: any) => {
-  const head = `${r.i} ${r.op}${r.selector ? ` ${r.selector}` : ""}`;
-  if (r.error) return `${head} — FAIL: ${r.error}`;
-  switch (r.op) {
-    case "eval":
-      return `${head} → ${r.result}`;
-    case "wait":
-      return `${head} → found: ${r.found}`;
-    case "screenshot":
-      return `${head} → saved ${r.path}`;
-    case "logs":
-      return `${head} → ${r.count} entries (next ${r.next})${r.entries.length ? `\n${r.entries.join("\n")}` : ""}`;
-    case "metrics":
-      return `${head} → dcl ${r.domContentLoaded}ms / load ${r.load}ms / ${(r.bytes / 1024).toFixed(1)} KB / ${r.resources} resources`;
-    default:
-      return `${head} → ok`;
-  }
-};
+// Tool schemas reuse the step fields, so a field is described once.
+const pick = (names: string[]) =>
+  Type.Object(Object.fromEntries(names.map((n) => [n, batchStep.properties[n]])));
+
 const text = (t: string, details: unknown = {}) => ({ content: [{ type: "text", text: t }], details });
 
 const fail = (e: unknown) =>
@@ -329,15 +315,7 @@ const tools: {
     description:
       "Screenshot the active page (or just the element matching selector). The image is returned to the model and also saved under ./artifacts/.",
     promptSnippet: "Take a screenshot of the visible page (or an element)",
-    parameters: Type.Object({
-      selector: Type.Optional(Type.String({ description: "Screenshot only this element instead of the whole page" })),
-      fullPage: Type.Optional(Type.Boolean({ description: "Capture the full scrollable page (default false)" })),
-      inline: Type.Optional(
-        Type.Boolean({
-          description: "Also return the image to the model (default false — path only; a PNG round-trips the whole image through context)",
-        })
-      ),
-    }),
+    parameters: pick(["selector", "fullPage", "inline"]),
     run: (p) =>
       session.screenshot({ fullPage: p.fullPage ?? false, selector: p.selector, inline: p.inline ?? false }).then((shot) => ({
         content: shot.data
@@ -358,13 +336,7 @@ const tools: {
     description:
       "Return console / page-error / service-worker log entries captured since launch (or since `since`). Levels: log, error, warning, debug, info, pageerror.",
     promptSnippet: "Read browser console and extension service-worker logs",
-    parameters: Type.Object({
-      level: Type.Optional(oneOf(["log", "error", "warning", "debug", "info", "pageerror"], "Level to filter by")),
-      source: Type.Optional(
-        oneOf(["page", "worker", "network", "download", "workerevent"], "Filter by source: page console, extension service worker, network failures/4xx-5xx, downloads")
-      ),
-      since: Type.Optional(Type.Integer({ description: "Only entries with index >= since (from the previous call's next)" })),
-    }),
+    parameters: pick(["level", "source", "since"]),
     run: (p) =>
       session.logs({ level: p.level, source: p.source, since: p.since ?? 0 }).then((r) =>
         text(
@@ -425,7 +397,7 @@ const tools: {
     name: "cext_batch",
     label: "Batch Browser Steps",
     description:
-      "Run many browser steps in ONE call — the cheapest way to drive a flow. Each step (click/fill/press/select/hover/wait/open/switch/closePage/eval/screenshot/logs/metrics) returns a one-line result instead of a full page snapshot, so a 12-step flow costs one round trip instead of twelve. Returns one line per step, the final URL/title, and stoppedAt when a step fails.",
+      "Run many browser steps in ONE call — the cheapest way to drive a flow, and the only action surface. Each step (click/fill/press/select/hover/wait/open/switch/closePage/scroll/history/eval/screenshot/logs/metrics) returns a one-line result instead of a full page snapshot, so a 12-step flow costs one round trip instead of twelve. Returns one line per step, the final URL/title, and stoppedAt when a step fails.",
     promptSnippet: "Run many browser steps in a single call (cheapest way to drive a flow)",
     promptGuidelines: [
       "Prefer cext_batch over a chain of cext_click/cext_fill/cext_press/cext_wait calls — same coverage, one API call instead of N.",
@@ -445,7 +417,7 @@ const tools: {
     run: (p) =>
       session.batch(p.steps, { snapshot: p.snapshot ?? false, stopOnError: p.stopOnError ?? true }).then((r) =>
         text(
-          `${r.results.map(batchLine).join("\n")}\n--- final ---\n${r.final.url}\n${r.final.title ?? ""}` +
+          `${r.results.map(stepLine).join("\n")}\n--- final ---\n${r.final.url}\n${r.final.title ?? ""}` +
             (r.stoppedAt === null ? "" : `\nstopped at step ${r.stoppedAt}`),
           { r }
         )

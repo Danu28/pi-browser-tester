@@ -11,7 +11,7 @@
 // whole point is that this runs from a plain shell with zero model round trips.
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ChromeExtSession } from "../src/session.js";
+import { ChromeExtSession, stepLine } from "../src/session.js";
 
 const firstLine = (s) => String(s).split("\n")[0];
 const file = process.argv[2];
@@ -41,10 +41,8 @@ try {
   await session.launch({ cwd: process.cwd(), ...launch });
   const run = await session.batch(steps, { stopOnError });
   url = run.final.url;
-  for (const r of run.results) {
-    const what = `${r.i} ${r.op}${r.selector ? ` ${r.selector}` : ""}`;
-    console.log(r.error ? `${what} — FAIL: ${firstLine(r.error)}` : r.op === "eval" ? `${what} → ${r.result}` : `${what} — ok`);
-  }
+  // Same one-line-per-step format as cext_batch: stepLine() lives in session.js.
+  for (const r of run.results) console.log(stepLine(r.error ? { ...r, error: firstLine(r.error) } : r));
   failed = run.results.find((r) => r.error) ?? null;
 } catch (e) {
   crash = e;

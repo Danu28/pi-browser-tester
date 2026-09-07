@@ -65,6 +65,20 @@ const PLAYWRIGHT_DIR = process.platform === "win32" ? "%LOCALAPPDATA%/ms-playwri
 // Cap on every blob of text headed back to the model (body text, eval output).
 const MAX_TEXT = 12000;
 
+// The step vocabulary: every browser action is one of these ops. index.ts builds
+// the cext_batch schema from this list and _batchStep rejects anything not in
+// it, so adding an op means adding one name here and one case below.
+export const OPS = [
+  "click", "fill", "press", "select", "hover", "wait", "open", "switch",
+  "closePage", "scroll", "history", "eval", "screenshot", "logs", "metrics",
+];
+
+// One step result is one line — in pi (cext_batch) and in scripts/scenario.mjs.
+export const stepLine = (r) => {
+  const head = `${r.i} ${r.op}${r.selector ? ` ${r.selector}` : ""}`;
+  return r.error ? `${head} — FAIL: ${r.error}` : `${head} → ${r.result}`;
+};
+
 export class NotLaunchedError extends Error {
   constructor() {
     super("Browser not launched. Call cext_launch first.");
@@ -551,9 +565,9 @@ export class ChromeExtSession {
     const results = [];
     for (const [i, step] of steps.entries()) {
       try {
-        results.push({ i, op: step.op, ...(await this._batchStep(step)) });
+        results.push({ i, op: step.op, selector: step.selector, ...(await this._batchStep(step)) });
       } catch (e) {
-        results.push({ i, op: step.op, ok: false, error: e.message });
+        results.push({ i, op: step.op, selector: step.selector, error: e.message });
         if (stopOnError) break;
       }
     }
@@ -570,49 +584,65 @@ export class ChromeExtSession {
     return { url: page.url(), title: await page.title().catch(() => "") };
   }
 
+  // Every case returns the one line batch prints for it: { result }.
   async _batchStep(step) {
     const timeout = step.timeout ?? 5000;
     switch (step.op) {
       case "click":
-        return this.click(step.selector, { index: step.index ?? 0, timeout, snapshot: false });
+        return this.click(step.selector, { index: step.index ?? 0, timeout, snapshot: false }).then(() => ({
+          result: "ok",
+        }));
       case "fill":
-        return this.fill(step.selector, step.value ?? "", { timeout, snapshot: false });
+        return this.fill(step.selector, step.value ?? "", { timeout, snapshot: false }).then(() => ({
+          result: "ok",
+        }));
       case "press":
-        return this.press(step.selector, step.key, { timeout, snapshot: false });
+        return this.press(step.selector, step.key, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
       case "select":
-        return this.select(step.selector, step.value, { timeout, snapshot: false });
+        return this.select(step.selector, step.value, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
       case "hover":
-        return this.hover(step.selector, { timeout, snapshot: false });
+        return this.hover(step.selector, { timeout, snapshot: false }).then(() => ({ result: "ok" }));
+      case "scroll":
+        return this.scroll({ selector: step.selector, to: step.to, x: step.x ?? 0, y: step.y ?? 0, timeout }).then(
+          (r) => ({ result: `x=${r.x} y=${r.y}` })
+        );
+      case "history":
+        return this.history(step.direction).then((r) => ({ result: r.url }));
       case "wait":
-        return this.wait(step.selector, { timeout, state: step.state ?? "visible", text: step.text });
+        return this.wait(step.selector, { timeout, state: step.state ?? "visible", text: step.text }).then((r) => ({
+          result: `found: ${r.found}`,
+        }));
       case "open":
         return this.open(step.url, {
           newTab: step.newTab ?? false,
           waitUntil: step.waitUntil ?? "domcontentloaded",
-        }).then((s) => ({ ok: true, url: s.url }));
+        }).then((r) => ({ result: r.url }));
       case "switch":
-        return this.switchPage(step.index).then((s) => ({ ok: true, url: s.url }));
+        return this.switchPage(step.index).then((r) => ({ result: r.url }));
       case "closePage":
-        return this.closePage(step.index).then((s) => ({ ok: true, url: s.url }));
+        return this.closePage(step.index).then((r) => ({ result: r.url }));
+      case "eval":
+        return this.eval(step.expression);
       case "screenshot":
         return this.screenshot({
           fullPage: step.fullPage ?? false,
           selector: step.selector,
           inline: step.inline ?? false,
-        }).then((shot) => ({ ok: true, path: shot.path }));
+        }).then((shot) => ({ result: shot.path }));
       case "logs":
         return this.logs({ level: step.level, source: step.source, since: step.since ?? 0 }).then((r) => ({
-          ok: true,
-          count: r.entries.length,
-          next: r.next,
-          entries: r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`),
+          result:
+            `${r.entries.length} entries (next ${r.next})` +
+            (r.entries.length
+              ? `\n${r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`).join("\n")}`
+              : ""),
         }));
-      case "eval":
-        return this.eval(step.expression);
       case "metrics":
-        return this.metrics().then((m) => ({ ok: true, ...m }));
+        return this.metrics().then((m) => ({
+          result: `dcl ${m.domContentLoaded}ms / load ${m.load}ms / ${(m.bytes / 1024).toFixed(1)} KB / ${m.resources} resources`,
+        }));
       default:
-        throw new Error(`unknown batch op: ${step.op} (have click/fill/press/select/hover/wait/open/switch/closePage/eval/screenshot/logs/metrics)`);
+        throw new Error(`unknown batch op: ${step.op} (have ${OPS.join("/")})`);
     }
   }
 
