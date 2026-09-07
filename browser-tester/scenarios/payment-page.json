@@ -1,0 +1,29 @@
+{
+  "note": "Payment Page on the SelectorsHub practice page. Run: node scripts/scenario.mjs scenarios/payment-page.json",
+  "launch": { "url": "https://selectorshub.com/xpath-practice-page/" },
+  "steps": [
+    {
+      "op": "eval",
+      "expression": "(() => { const f = document.querySelector('#cvv').closest('form'); if (!f) throw new Error('payment inputs are not inside a form — the submit assertion below would be meaningless'); return { method: f.method || 'GET', action: f.action || '(self)' }; })()"
+    },
+    { "op": "fill", "selector": "#cardName", "value": "Ada Lovelace" },
+    { "op": "fill", "selector": "#cardNumber", "value": "4111 1111 1111 1111" },
+    { "op": "fill", "selector": "#expiry", "value": "12/29" },
+    { "op": "fill", "selector": "#cvv", "value": "123" },
+    {
+      "op": "eval",
+      "expression": "(async () => { const want = { cardName: `Ada Lovelace`, cardNumber: `4111 1111 1111 1111`, expiry: `12/29`, cvv: `123` }; const got = {}; for (const k of Object.keys(want)) { got[k] = document.querySelector(`#` + k).value; if (got[k] !== want[k]) throw new Error(k + ` is ` + JSON.stringify(got[k]) + `, expected ` + JSON.stringify(want[k])); } return got; })()",
+      "note": "pre-submit: every field kept what we typed"
+    },
+    {
+      "op": "click",
+      "selector": "button:has-text(\"Pay\")",
+      "note": "unlike the Dummy Form's dead button, this one submits — it is inside a real <form>"
+    },
+    {
+      "op": "eval",
+      "expression": "(async () => { await new Promise(r => setTimeout(r, 800)); const url = location.href; const cleared = [`cardName`, `cardNumber`, `expiry`, `cvv`].every(id => !document.querySelector(`#` + id).value); if (!url.endsWith(`?`)) throw new Error(`Pay did not submit — url is ` + url); if (!cleared) throw new Error(`fields survived the submit — the page did not reload`); return { submitted: true, url, cleared }; })()",
+      "note": "post-submit: GET submit reloads the page, so the url gains '?' and every field is empty again"
+    }
+  ]
+}
