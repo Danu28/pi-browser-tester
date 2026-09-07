@@ -1,2 +1,5 @@
 node_modules/
 artifacts/
+
+# agent session state (memory graph, installed-extension copy)
+.pi/

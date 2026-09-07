@@ -91,3 +91,7 @@ manifest is ignored for unpacked loads.
   `INSTALLATION_COMPLETE` marker file.
 - **`npm run check`** — zero-dependency smoke test for the pure core logic
   (`browser-tester/scripts/smoke.mjs`), runnable without pi or a browser.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
