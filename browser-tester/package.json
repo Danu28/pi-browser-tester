@@ -17,6 +17,7 @@
   },
   "scripts": {
     "check": "node scripts/smoke.mjs",
+    "scenario": "node scripts/scenario.mjs",
     "install-browser": "node scripts/install-browser.mjs"
   }
 }
