@@ -157,4 +157,54 @@ const relaunched = await never.reloadExtension({ waitMs: 50 });
 assert.equal(relaunched.fallback, "relaunch");
 assert.equal(never.relaunchedWith.extensionPath, "C:\\ext", "fallback must relaunch with the original options");
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback");
+// 9. cost: actions must not re-ship an unchanged body text, and batch must run
+//    N steps without N snapshots (that is the whole point of cext_batch).
+const fakePage = {
+  url: () => "http://x/page",
+  title: async () => "Page",
+  isClosed: () => false,
+  evaluate: async () => "hello",
+};
+const s3 = new ChromeExtSession();
+const calls = [];
+s3.context = { pages: () => [fakePage], newPage: async () => fakePage };
+s3.activePage = fakePage;
+s3.click = async (sel, o) => { calls.push(["click", sel, o]); return { ok: true }; };
+s3.fill = async (sel, v, o) => { calls.push(["fill", sel, v, o]); return { ok: true }; };
+
+assert.equal((await s3._snapshot({ dedupe: true })).bodyText, "hello");
+assert.match((await s3._snapshot({ dedupe: true })).bodyText, /^\(unchanged/);
+assert.equal((await s3.snapshot()).bodyText, "hello", "explicit cext_snapshot must still return the full text");
+
+const batched = await s3.batch([
+  { op: "click", selector: "#save" },
+  { op: "fill", selector: "#name", value: "Ada" },
+  { op: "eval", expression: "1 + 1" },
+  { op: "nope" },
+  { op: "click", selector: "#never" },
+]);
+assert.deepEqual(calls[0][2], { index: 0, timeout: 5000, snapshot: false }, "batch steps must skip the snapshot");
+assert.equal(batched.results.length, 4, "stopOnError stops at the failing step");
+assert.equal(batched.stoppedAt, 3);
+assert.match(batched.results[3].error, /^unknown batch op: nope/);
+assert.equal(batched.results[2].result, JSON.stringify("hello"));
+assert.equal(batched.final.url, "http://x/page");
+assert.equal(batched.final.bodyText, undefined, "batch must not snapshot by default");
+assert.equal((await s3.batch([{ op: "click", selector: "#a" }], { snapshot: true })).final.bodyText, "hello");
+
+const allSteps = await s3.batch([{ op: "nope" }, { op: "click", selector: "#b" }], { stopOnError: false });
+assert.equal(allSteps.results.length, 2, "stopOnError:false runs every step");
+assert.equal(allSteps.stoppedAt, null);
+await assert.rejects(() => s3.batch([]), /steps must be a non-empty array/);
+
+// 10. screenshot: inline:false (default) must not base64 the image into context
+const s4 = new ChromeExtSession();
+s4.context = { pages: () => [fakePage] };
+s4.activePage = fakePage;
+s4.artifactsDir = tmpdir();
+fakePage.screenshot = async () => Buffer.from("png");
+assert.equal((await s4.screenshot()).data, null);
+assert.match((await s4.screenshot()).path, /\.png$/);
+assert.equal((await s4.screenshot({ inline: true })).data, Buffer.from("png").toString("base64"));
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline");

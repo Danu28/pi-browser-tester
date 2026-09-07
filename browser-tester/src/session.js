@@ -119,6 +119,7 @@ export class ChromeExtSession {
     this.logEntries = [];
     this.logSeq = 0;
     this._cdp = null;
+    this._lastBodyHash = null;
   }
 
   _pushLog(source, level, text) {
@@ -228,19 +229,30 @@ export class ChromeExtSession {
   }
 
   // Every action is the same three steps: resolve the active page, act, snapshot.
-  async _act(fn) {
+  // snapshot:false returns a one-liner instead — batch runs use it so N steps do
+  // not ship the same body text N times.
+  async _act(fn, { snapshot = true } = {}) {
     const page = await this._ensurePage();
     await fn(page);
-    return this._snapshot();
+    return snapshot ? this._snapshot({ dedupe: true }) : { ok: true, url: page.url() };
   }
 
-  async _snapshot() {
+  async _snapshot({ dedupe = false } = {}) {
     const page = await this._ensurePage();
     let bodyText = "";
     try {
       bodyText = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, 12000);
     } catch {
       // non-HTML content (json/xml/pdf) — no body text
+    }
+    // Cost: an action that did not change the page was returning the same 12k
+    // chars again. Collapse repeats to a marker — an explicit cext_snapshot
+    // (dedupe:false) still gets the full text.
+    const hash = createHash("sha1").update(bodyText).digest("hex");
+    const unchanged = hash === this._lastBodyHash;
+    this._lastBodyHash = hash;
+    if (dedupe && unchanged) {
+      bodyText = "(unchanged — same body text as the previous snapshot; call cext_snapshot to read it again)";
     }
     // Index by object identity, not URL: two tabs on the same URL (common after
     // an extension opens a tab of its own) must not report the wrong active one.
@@ -307,6 +319,7 @@ export class ChromeExtSession {
     await this.close(); // relaunch = fresh state, also acts as "reload after edits"
     this.logEntries = [];
     this.logSeq = 0;
+    this._lastBodyHash = null;
     this.extId = null;
     this.artifactsDir = join(cwd, "artifacts");
     mkdirSync(this.artifactsDir, { recursive: true });
@@ -483,36 +496,115 @@ export class ChromeExtSession {
     return this._snapshot();
   }
 
-  async click(selector, { index = 0, timeout = 5000 } = {}) {
-    return this._act((page) => {
-      const loc = page.locator(selector);
-      return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
-    });
+  async click(selector, { index = 0, timeout = 5000, snapshot = true } = {}) {
+    return this._act(
+      (page) => {
+        const loc = page.locator(selector);
+        return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
+      },
+      { snapshot }
+    );
   }
 
-  async fill(selector, value, { timeout = 5000 } = {}) {
-    return this._act((page) => page.locator(selector).first().fill(value, { timeout }));
+  async fill(selector, value, { timeout = 5000, snapshot = true } = {}) {
+    return this._act((page) => page.locator(selector).first().fill(value, { timeout }), { snapshot });
   }
 
-  async hover(selector, { timeout = 5000 } = {}) {
-    return this._act((page) => page.locator(selector).first().hover({ timeout }));
+  async hover(selector, { timeout = 5000, snapshot = true } = {}) {
+    return this._act((page) => page.locator(selector).first().hover({ timeout }), { snapshot });
   }
 
   // Dropdowns: plain string matches the option's value attribute; options
   // without a value store their text as value, so retry with {label}.
-  async select(selector, value, { timeout = 5000 } = {}) {
-    return this._act(async (page) => {
-      const loc = page.locator(selector).first();
-      await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
-    });
+  async select(selector, value, { timeout = 5000, snapshot = true } = {}) {
+    return this._act(
+      async (page) => {
+        const loc = page.locator(selector).first();
+        await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
+      },
+      { snapshot }
+    );
   }
 
   // Keyboard: with a selector, focus the element first then press; without,
   // press globally on the page (Tab to walk focus for a11y testing, Escape, …).
-  async press(selector, key, { timeout = 5000 } = {}) {
-    return this._act((page) =>
-      selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)
+  async press(selector, key, { timeout = 5000, snapshot = true } = {}) {
+    return this._act(
+      (page) => (selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)),
+      { snapshot }
     );
+  }
+
+  // N interactions in ONE tool call. Each step returns a one-liner (no
+  // per-step snapshot), so a 12-step flow is one round trip, not twelve.
+  async batch(steps, { snapshot = false, stopOnError = true } = {}) {
+    if (!Array.isArray(steps) || steps.length === 0) throw new Error("batch: steps must be a non-empty array");
+    const results = [];
+    for (const [i, step] of steps.entries()) {
+      try {
+        results.push({ i, op: step.op, ...(await this._batchStep(step)) });
+      } catch (e) {
+        results.push({ i, op: step.op, ok: false, error: e.message });
+        if (stopOnError) break;
+      }
+    }
+    const failed = results.find((r) => r.error);
+    return {
+      results,
+      final: snapshot ? await this._snapshot() : await this._mini(),
+      stoppedAt: failed && stopOnError ? failed.i : null,
+    };
+  }
+
+  async _mini() {
+    const page = await this._ensurePage();
+    return { url: page.url(), title: await page.title().catch(() => "") };
+  }
+
+  async _batchStep(step) {
+    const timeout = step.timeout ?? 5000;
+    switch (step.op) {
+      case "click":
+        return this.click(step.selector, { index: step.index ?? 0, timeout, snapshot: false });
+      case "fill":
+        return this.fill(step.selector, step.value ?? "", { timeout, snapshot: false });
+      case "press":
+        return this.press(step.selector, step.key, { timeout, snapshot: false });
+      case "select":
+        return this.select(step.selector, step.value, { timeout, snapshot: false });
+      case "hover":
+        return this.hover(step.selector, { timeout, snapshot: false });
+      case "wait":
+        return this.wait(step.selector, { timeout, state: step.state ?? "visible", text: step.text });
+      case "open":
+        return this.open(step.url, {
+          newTab: step.newTab ?? false,
+          waitUntil: step.waitUntil ?? "domcontentloaded",
+        }).then((s) => ({ ok: true, url: s.url }));
+      case "switch":
+        return this.switchPage(step.index).then((s) => ({ ok: true, url: s.url }));
+      case "closePage":
+        return this.closePage(step.index).then((s) => ({ ok: true, url: s.url }));
+      case "screenshot":
+        return this.screenshot({
+          fullPage: step.fullPage ?? false,
+          selector: step.selector,
+          inline: step.inline ?? false,
+        }).then((shot) => ({ ok: true, path: shot.path }));
+      case "logs":
+        return this.logs({ level: step.level, source: step.source, since: step.since ?? 0 }).then((r) => ({
+          ok: true,
+          count: r.entries.length,
+          next: r.next,
+          entries: r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`),
+        }));
+      case "eval":
+        return this.eval(step.expression);
+      case "metrics":
+        return this.metrics().then((m) => ({ ok: true, ...m }));
+      default:
+        throw new Error(`unknown batch op: ${step.op} (have click/fill/press/select/hover/wait/open/switch/closePage/eval/screenshot/logs/metrics)`);
+    }
   }
 
   // Scrolling for its own sake: lazy-loaded / infinite lists, reading or
@@ -600,14 +692,16 @@ export class ChromeExtSession {
     }
   }
 
-  async screenshot({ fullPage = false, selector = undefined } = {}) {
+  // inline:false (default) returns the path only — a base64 PNG round-trips the
+  // whole image through the model's context for no gain in most flows.
+  async screenshot({ fullPage = false, selector = undefined, inline = false } = {}) {
     const page = await this._ensurePage();
     const buf = selector
       ? await page.locator(selector).first().screenshot()
       : await page.screenshot({ fullPage });
     const name = `cext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
     writeFileSync(join(this.artifactsDir, name), buf);
-    return { data: buf.toString("base64"), path: join(this.artifactsDir, name) };
+    return { data: inline ? buf.toString("base64") : null, path: join(this.artifactsDir, name) };
   }
 
   async logs({ level, since = 0, source = undefined } = {}) {

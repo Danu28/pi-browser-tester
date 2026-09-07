@@ -24,6 +24,31 @@ const ms = (what: string) =>
   Type.Optional(Type.Integer({ description: `${what} timeout in ms (default 5000)` }));
 const selector = (description: string) => Type.String({ description });
 
+// One cext_batch step. Every op maps to an existing session method; unknown
+// keys are ignored by the runner, unknown ops fail the step with a clear list.
+const batchStep = Type.Object({
+  op: oneOf(
+    ["click", "fill", "press", "select", "hover", "wait", "open", "switch", "closePage", "eval", "screenshot", "logs", "metrics"],
+    "Operation to run"
+  ),
+  selector: Type.Optional(selector("Playwright selector (click/fill/press/select/hover/wait/screenshot)")),
+  value: Type.Optional(Type.String({ description: "Value for fill, or option value/label for select" })),
+  key: Type.Optional(Type.String({ description: "Key for press, e.g. 'Enter' or 'Control+a'" })),
+  text: Type.Optional(Type.String({ description: "For wait: wait for this visible text instead of a selector" })),
+  url: Type.Optional(Type.String({ description: "For open: URL to navigate to" })),
+  index: Type.Optional(Type.Integer({ description: "0-based element index for click, or page index for switch/closePage" })),
+  expression: Type.Optional(Type.String({ description: "For eval: JS expression or IIFE returning a value" })),
+  timeout: ms("Step"),
+  state: Type.Optional(oneOf(["visible", "hidden", "attached", "detached"], "For wait: element state (default visible)")),
+  newTab: Type.Optional(Type.Boolean({ description: "For open: new tab instead of navigating the active page" })),
+  waitUntil: Type.Optional(oneOf(["domcontentloaded", "load", "networkidle"], "For open (default domcontentloaded)")),
+  fullPage: Type.Optional(Type.Boolean({ description: "For screenshot: capture the full scrollable page" })),
+  inline: Type.Optional(Type.Boolean({ description: "For screenshot: also return the image to the model (default false)" })),
+  level: Type.Optional(oneOf(["log", "error", "warning", "debug", "info", "pageerror"], "For logs: level filter")),
+  source: Type.Optional(oneOf(["page", "worker", "network", "download", "workerevent"], "For logs: source filter")),
+  since: Type.Optional(Type.Integer({ description: "For logs: only entries with index >= since" })),
+});
+
 // Result shapes. Most tools return a page snapshot; the rest return plain text.
 const snapText = (s: any) =>
   `URL: ${s.url}\nTitle: ${s.title}\nActive page: ${s.activeIndex} of ${
@@ -33,6 +58,26 @@ const snapText = (s: any) =>
   }`;
 
 const snap = (s: any) => ({ content: [{ type: "text", text: snapText(s) }], details: { s } });
+
+// One line per batch step: the whole point of cext_batch is a compact result.
+const batchLine = (r: any) => {
+  const head = `${r.i} ${r.op}${r.selector ? ` ${r.selector}` : ""}`;
+  if (r.error) return `${head} — FAIL: ${r.error}`;
+  switch (r.op) {
+    case "eval":
+      return `${head} → ${r.result}`;
+    case "wait":
+      return `${head} → found: ${r.found}`;
+    case "screenshot":
+      return `${head} → saved ${r.path}`;
+    case "logs":
+      return `${head} → ${r.count} entries${r.entries.length ? `\n${r.entries.join("\n")}` : ""}`;
+    case "metrics":
+      return `${head} → dcl ${r.domContentLoaded}ms / load ${r.load}ms / ${(r.bytes / 1024).toFixed(1)} KB / ${r.resources} resources`;
+    default:
+      return `${head} → ok`;
+  }
+};
 const text = (t: string, details: unknown = {}) => ({ content: [{ type: "text", text: t }], details });
 
 const fail = (e: unknown) =>
@@ -287,16 +332,23 @@ const tools: {
     parameters: Type.Object({
       selector: Type.Optional(Type.String({ description: "Screenshot only this element instead of the whole page" })),
       fullPage: Type.Optional(Type.Boolean({ description: "Capture the full scrollable page (default false)" })),
+      inline: Type.Optional(
+        Type.Boolean({
+          description: "Also return the image to the model (default false — path only; a PNG round-trips the whole image through context)",
+        })
+      ),
     }),
     run: (p) =>
-      session.screenshot({ fullPage: p.fullPage ?? false, selector: p.selector }).then((shot) => ({
-        content: [
-          { type: "text", text: `screenshot saved: ${shot.path}` },
-          // Flat shape is what pi's tool-result pipeline reads; the nested
-          // source:{type:"base64"} form is Anthropic's outbound wire format and
-          // leaves data undefined here (Buffer.from(undefined) -> throw).
-          { type: "image", data: shot.data, mimeType: "image/png" },
-        ],
+      session.screenshot({ fullPage: p.fullPage ?? false, selector: p.selector, inline: p.inline ?? false }).then((shot) => ({
+        content: shot.data
+          ? [
+              { type: "text", text: `screenshot saved: ${shot.path}` },
+              // Flat shape is what pi's tool-result pipeline reads; the nested
+              // source:{type:"base64"} form is Anthropic's outbound wire format
+              // and leaves data undefined here (Buffer.from(undefined) -> throw).
+              { type: "image", data: shot.data, mimeType: "image/png" },
+            ]
+          : [{ type: "text", text: `screenshot saved: ${shot.path} (image not returned — pass inline:true to see it)` }],
         details: { path: shot.path },
       })),
   },
@@ -364,6 +416,36 @@ const tools: {
       session.reloadExtension().then((r) =>
         text(
           `extension reloaded${r.fallback ? " (via browser relaunch — no service worker respawned)" : ""}\nservice workers: ${r.serviceWorkers.join(", ") || "none"}`,
+          { r }
+        )
+      ),
+  },
+  {
+    name: "cext_batch",
+    label: "Batch Browser Steps",
+    description:
+      "Run many browser steps in ONE call — the cheapest way to drive a flow. Each step (click/fill/press/select/hover/wait/open/switch/closePage/eval/screenshot/logs/metrics) returns a one-line result instead of a full page snapshot, so a 12-step flow costs one round trip instead of twelve. Returns one line per step, the final URL/title, and stoppedAt when a step fails.",
+    promptSnippet: "Run many browser steps in a single call (cheapest way to drive a flow)",
+    promptGuidelines: [
+      "Prefer cext_batch over a chain of cext_click/cext_fill/cext_press/cext_wait calls — same coverage, one API call instead of N.",
+      "End a batch with an {op:'eval'} step returning a compact object of the assertions you care about; that replaces a separate cext_snapshot.",
+      "Pass snapshot:true to include the final page body text (default false — one-liners only).",
+      "Steps run in order; stopOnError:true (default) stops at the first failure and reports stoppedAt.",
+    ],
+    parameters: Type.Object({
+      steps: Type.Array(batchStep, { description: "Steps to run, in order" }),
+      snapshot: Type.Optional(
+        Type.Boolean({ description: "Include the final page body text (default false)" })
+      ),
+      stopOnError: Type.Optional(
+        Type.Boolean({ description: "Stop at the first failing step (default true)" })
+      ),
+    }),
+    run: (p) =>
+      session.batch(p.steps, { snapshot: p.snapshot ?? false, stopOnError: p.stopOnError ?? true }).then((r) =>
+        text(
+          `${r.results.map(batchLine).join("\n")}\n--- final ---\n${r.final.url}\n${r.final.title ?? ""}` +
+            (r.stoppedAt === null ? "" : `\nstopped at step ${r.stoppedAt}`),
           { r }
         )
       ),
