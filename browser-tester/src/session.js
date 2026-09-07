@@ -428,6 +428,11 @@ export class ChromeExtSession {
   // Escape hatch: raw CDP for anything the tool set does not wrap (permissions,
   // Network.*, Emulation.*, …). target: "page" (default) or "browser".
   async cdp(method, params = {}, { target = "page" } = {}) {
+    if (typeof method !== "string" || !method.trim()) throw new Error("cdp: method must be a non-empty string");
+    if (params == null) params = {};
+    if (typeof params !== "object" || Array.isArray(params))
+      throw new Error(`cdp params must be an object (got ${typeof params}) — e.g. {"expression":"location.href"}`);
+    if (target !== "page" && target !== "browser") throw new Error(`cdp target must be "page" or "browser"`);
     const ctx = this._ctx();
     this._cdp ??= new Map();
     const browser = target === "browser";
