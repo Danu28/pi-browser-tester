@@ -19,6 +19,8 @@ if errorlevel 1 (
 )
 
 echo [install] copied to %DST%
-echo [install] next: npm install --prefix "%DST%"
+echo [install] no npm install needed: on first cext_launch playwright is
+echo [install] fetched once into %USERPROFILE%\.browser-tester (outside the copy,
+echo [install] so re-installing never re-downloads it).
 echo [install] then restart pi or run /reload
 endlocal

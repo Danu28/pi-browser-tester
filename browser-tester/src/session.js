@@ -6,30 +6,44 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-// Root of this package (one level up from src/). All dependency installs below
-// happen here so the extension is self-contained no matter how it was placed
-// (pi install, or a drop-in copy under ~/.pi/agent/extensions/).
+// Root of this package (one level up from src/).
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Resolve the playwright package, lazily. If it is missing (e.g. the extension
-// was copied into the global extensions dir and no `npm install` ever ran),
-// install it into this package's own node_modules on first use, then retry.
-// ESM never caches a failed dynamic import, so the retry re-resolves.
+// Shared, persistent home for the playwright package — deliberately OUTSIDE the
+// package, because a global install is a throwaway copy (~/.pi/agent/extensions/
+// browser-tester, deleted and re-copied by install.bat). Deps living there would
+// be wiped on every re-install and re-downloaded on the next launch.
+export const DEPS = join(homedir(), ".browser-tester");
+const depsRequire = createRequire(pathToFileURL(join(DEPS, "deps.cjs")));
+
+// Resolve the playwright package, lazily: wherever node already finds it (repo
+// install, copy-local node_modules), else the shared DEPS dir, and only then
+// install into DEPS once.
 let pwPromise;
 function loadPlaywright() {
   pwPromise ??= (async () => {
     try {
       return await import("playwright");
     } catch {}
+    try {
+      return depsRequire("playwright");
+    } catch {}
     console.error(
-      "[browser-tester] playwright package not found — running 'npm install' in the extension package to fetch it (one-time)."
+      `[browser-tester] playwright package not found — installing it into ${DEPS} (one-time, shared by every copy of this extension).`
     );
-    await runInShell("npm install", PKG_ROOT);
-    return await import("playwright");
+    mkdirSync(DEPS, { recursive: true });
+    const range = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).dependencies.playwright;
+    writeFileSync(
+      join(DEPS, "package.json"),
+      JSON.stringify({ name: "browser-tester-deps", private: true, dependencies: { playwright: range } })
+    );
+    await runInShell("npm install", DEPS);
+    return depsRequire("playwright");
   })();
   return pwPromise;
 }
@@ -99,12 +113,16 @@ export async function installChromium() {
       "This happens once; it may take a few minutes on slow links."
   );
   try {
-    // Runs in the extension package dir so the local playwright CLI resolves
-    // even when none is installed globally. 600s timeout: playwright's default
-    // 30s is too short on slow links and fails installs for many users.
-    await runInShell("npx playwright install chromium", PKG_ROOT, {
-      PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "600000",
-    });
+    // Run where playwright actually lives so npx picks up the local CLI instead
+    // of fetching one — DEPS after the one-time install, else the package dir.
+    // 600s timeout: playwright's default 30s is too short on slow links.
+    await runInShell(
+      "npx playwright install chromium",
+      existsSync(join(DEPS, "node_modules", "playwright")) ? DEPS : PKG_ROOT,
+      {
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: "600000",
+      }
+    );
   } catch (e) {
     throw new Error(
       `Chromium install failed: ${e.message}\n` +

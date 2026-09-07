@@ -21,8 +21,9 @@ All tools are `cext_*` (kept from the extension-testing origin).
 - Or run `install.bat` (Windows) — it copies `browser-tester/` to
   `%USERPROFILE%\.pi\agent\extensions\browser-tester\`, deleting any previous
   copy first, so re-run it after every edit.
-- Then `npm install` inside the copied folder (its `package.json` declares
-  `playwright`).
+- No `npm install` needed. On first `cext_launch` the `playwright` package is
+  fetched **once** into `~/.browser-tester/` — outside the copy, so deleting or
+  re-copying the extension folder never re-downloads it.
 - First `cext_launch` downloads Chromium (~170 MB) if missing. `npm run
   install-browser` does the browser download alone.
 

@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ChromeExtSession, NotLaunchedError, launchArgs } from "../src/session.js";
+import { join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ChromeExtSession, DEPS, NotLaunchedError, launchArgs } from "../src/session.js";
 
 const s = new ChromeExtSession();
 
@@ -232,4 +233,13 @@ s6.activePage = { ...fakePage, evaluate: async () => ({ a: 1, b: [2] }) };
 s6.context = { pages: () => [s6.activePage] };
 assert.equal((await s6.eval("x")).result, '{"a":1,"b":[2]}', "eval must not pretty-print");
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline + changed-lines diff + compact eval");
+// 12. deps must live outside this package: a global install is a throwaway copy
+//     (~/.pi/agent/extensions/browser-tester, deleted on every re-install), so
+//     anything installed inside it is re-downloaded on the next launch.
+const pkgDir = resolve(fileURLToPath(new URL("..", import.meta.url)));
+assert.ok(
+  !resolve(DEPS).startsWith(pkgDir + sep) && resolve(DEPS) !== pkgDir,
+  `deps dir ${DEPS} must not be inside the extension package ${pkgDir}`
+);
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload fallback + batch/unchanged collapse + screenshot inline + changed-lines diff + compact eval + deps outside package");
