@@ -90,7 +90,7 @@ const tools: {
     promptSnippet: "Launch a browser (optionally with an unpacked Chrome extension loaded)",
     promptGuidelines: [
       "Use cext_launch before any other cext_* tool. Call it again after the user edits extension code — it tears down and relaunches fresh, which is the reload step.",
-      "Website/UI testing: omit extensionPath entirely and just drive pages (cext_open, cext_click, cext_fill, cext_select, cext_hover, cext_wait, cext_snapshot, cext_screenshot, cext_metrics).",
+      "Website/UI testing: omit extensionPath entirely and drive pages with cext_batch steps (open/click/fill/select/hover/wait/scroll/history/eval/screenshot/logs/metrics); read the page with cext_snapshot.",
       "Extension testing: pass the absolute or cwd-relative path to the extension folder containing manifest.json, e.g. './sample-extension', then use cext_popup / cext_reload, and cext_serve for content-script flows.",
     ],
     parameters: Type.Object({
@@ -127,34 +127,6 @@ const tools: {
     },
   },
   {
-    name: "cext_history",
-    label: "Browser Back / Forward",
-    description:
-      "Navigate the active page one step back or forward in its browser history (as clicking the browser's back/forward buttons). Use for form-resubmission and navigation flows.",
-    promptSnippet: "Go back or forward in browser history",
-    parameters: Type.Object({
-      direction: oneOf(["back", "forward"], "Which direction to navigate"),
-    }),
-    run: (p) => session.history(p.direction).then(snap),
-  },
-  {
-    name: "cext_open",
-    label: "Open URL",
-    description:
-      "Navigate the active page to url. Use for normal web pages, http://127.0.0.1:<port> fixture pages served by cext_serve, or extension pages like chrome-extension://<id>/options.html.",
-    promptSnippet: "Navigate the browser to a URL",
-    parameters: Type.Object({
-      url: Type.String({ description: "URL to open" }),
-      newTab: Type.Optional(
-        Type.Boolean({ description: "Open in a new tab instead of navigating the active page (default false)" })
-      ),
-      waitUntil: Type.Optional(
-        oneOf(["domcontentloaded", "load", "networkidle"], "When to consider navigation done (default domcontentloaded; use networkidle for SPAs)")
-      ),
-    }),
-    run: (p) => session.open(p.url, { newTab: p.newTab ?? false, waitUntil: p.waitUntil ?? "domcontentloaded" }).then(snap),
-  },
-  {
     name: "cext_popup",
     label: "Open Popup",
     description:
@@ -171,143 +143,6 @@ const tools: {
     promptSnippet: "Read the current page state (URL, title, body text)",
     parameters: Type.Object({}),
     run: () => session.snapshot().then(snap),
-  },
-  {
-    name: "cext_metrics",
-    label: "Page Performance Metrics",
-    description:
-      "Return load-performance metrics of the active page: DOMContentLoaded / load timing (ms after navigation start), total transferred bytes, and resource counts by type. Use after navigation to assert pages are healthy (reasonable weight, no stragglers).",
-    promptSnippet: "Measure page load performance (timings, resource counts)",
-    parameters: Type.Object({}),
-    run: () =>
-      session.metrics().then((m) =>
-        text(
-          `URL: ${m.url}\nDOMContentLoaded: ${m.domContentLoaded ?? "n/a"} ms\nload: ${m.load ?? "n/a"} ms\ntransferred: ${(m.bytes / 1024).toFixed(1)} KB\nresources: ${m.resources}\nby type: ${JSON.stringify(m.byType)}`,
-          { m }
-        )
-      ),
-  },
-  {
-    name: "cext_switch",
-    label: "Switch Page",
-    description:
-      "Make the page at index the active page (indices as listed by cext_snapshot / cext_open). Useful after cext_popup created a second page.",
-    promptSnippet: "Switch the active page by index",
-    parameters: Type.Object({
-      index: Type.Integer({ description: "Page index from the pages list" }),
-    }),
-    run: (p) => session.switchPage(p.index).then(snap),
-  },
-  {
-    name: "cext_click",
-    label: "Click Element",
-    description:
-      "Click the first element matching selector (any Playwright selector: '#id', '.cls', 'text=...', 'role=button[name=...]'). Returns the resulting page snapshot.",
-    promptSnippet: "Click an element by CSS/text/role selector",
-    parameters: Type.Object({
-      selector: selector("Playwright selector, e.g. '#increment' or 'text=Save'"),
-      index: Type.Optional(Type.Integer({ description: "0-based index of the element to click when multiple match" })),
-      timeout: ms("Click"),
-    }),
-    run: (p) => session.click(p.selector, { index: p.index ?? 0, timeout: p.timeout ?? 5000 }).then(snap),
-  },
-  {
-    name: "cext_fill",
-    label: "Fill Input",
-    description: "Fill the first input matching selector with value.",
-    promptSnippet: "Type into an input field",
-    parameters: Type.Object({
-      selector: selector("Playwright selector for the input"),
-      value: Type.String({ description: "Text to type" }),
-      timeout: ms("Fill"),
-    }),
-    run: (p) => session.fill(p.selector, p.value, { timeout: p.timeout ?? 5000 }).then(snap),
-  },
-  {
-    name: "cext_hover",
-    label: "Hover Element",
-    description:
-      "Move the mouse over the first element matching selector — reveals hover-only menus, dropdowns and tooltips before you click into them.",
-    promptSnippet: "Hover an element (menus, tooltips)",
-    parameters: Type.Object({
-      selector: selector("Playwright selector, e.g. '.nav-item' or 'text=Profile'"),
-      timeout: ms("Hover"),
-    }),
-    run: (p) => session.hover(p.selector, { timeout: p.timeout ?? 5000 }).then(snap),
-  },
-  {
-    name: "cext_select",
-    label: "Select Option",
-    description: "Choose an option in the first <select> matching selector — pass the option's value or its visible label.",
-    promptSnippet: "Choose an option from a dropdown select",
-    parameters: Type.Object({
-      selector: selector("Playwright selector for the <select>"),
-      value: Type.String({ description: "Option value or visible label to select" }),
-      timeout: ms("Select"),
-    }),
-    run: (p) => session.select(p.selector, p.value, { timeout: p.timeout ?? 5000 }).then(snap),
-  },
-  {
-    name: "cext_press",
-    label: "Press Key",
-    description:
-      "Press a key or shortcut — globally on the page, or (with selector) after focusing that element. Keys: 'Tab', 'Enter', 'Escape', 'ArrowDown', 'Control+a', ... Essential for keyboard-only and accessibility flows.",
-    promptSnippet: "Press a keyboard key (Tab, Enter, Escape, …)",
-    parameters: Type.Object({
-      key: Type.String({ description: "Key or shortcut, e.g. 'Tab', 'Enter', 'Escape', 'Control+a'" }),
-      selector: Type.Optional(Type.String({ description: "Focus this element first (default: press globally)" })),
-      timeout: ms("Focus/press"),
-    }),
-    run: (p) => session.press(p.selector, p.key, { timeout: p.timeout ?? 5000 }).then(snap),
-  },
-  {
-    name: "cext_scroll",
-    label: "Scroll Page",
-    description:
-      "Scroll the active page: to a selector (element into view), to the top or bottom (infinite scroll / lazy-loaded lists), or by x/y pixels. Returns the resulting scroll position. Note: clicks and hovers already scroll their own target into view.",
-    promptSnippet: "Scroll the page (to an element, top/bottom, or by pixels)",
-    parameters: Type.Object({
-      selector: Type.Optional(selector("Playwright selector — scroll this element into view")),
-      to: Type.Optional(oneOf(["top", "bottom"], "Scroll to the top or bottom of the page")),
-      x: Type.Optional(Type.Integer({ description: "Horizontal scroll delta in px" })),
-      y: Type.Optional(Type.Integer({ description: "Vertical scroll delta in px" })),
-      timeout: ms("Scroll"),
-    }),
-    run: (p) =>
-      session
-        .scroll({ selector: p.selector, to: p.to, x: p.x ?? 0, y: p.y ?? 0, timeout: p.timeout ?? 5000 })
-        .then((r) => text(`scrolled to x=${r.x} y=${r.y}`, { r })),
-  },
-  {
-    name: "cext_eval",
-    label: "Evaluate JS",
-    description:
-      "Evaluate a JavaScript expression in the active page and return the JSON-serialized result. Use an expression or an IIFE that returns a value, e.g. \"document.querySelector('#count').textContent\" or \"(() => { const r = []; ...; return r; })()\".",
-    promptSnippet: "Run JavaScript in the page and get the result",
-    parameters: Type.Object({
-      expression: Type.String({ description: "JS expression or IIFE to evaluate" }),
-    }),
-    run: (p) =>
-      session.eval(p.expression).then((r) => text(`result (${r.type}):\n${r.result}`, { r })),
-  },
-  {
-    name: "cext_wait",
-    label: "Wait For Element",
-    description:
-      "Wait up to timeout ms for a selector (or for text to appear). Returns { found: true/false } — non-throwing, so use it for assertions like 'wait until the popup shows \"Tests complete\"'. Pass state:'hidden' to wait for something to disappear (e.g. a spinner).",
-    promptSnippet: "Wait for an element or text to appear (assertion)",
-    parameters: Type.Object({
-      selector: Type.Optional(selector("Playwright selector (omit when waiting on text)")),
-      text: Type.Optional(Type.String({ description: "Wait for this visible text instead of a selector" })),
-      state: Type.Optional(
-        oneOf(["visible", "hidden", "attached", "detached"], "Element state to wait for (default visible)")
-      ),
-      timeout: Type.Optional(Type.Integer({ description: "Milliseconds to wait (default 5000)" })),
-    }),
-    run: (p) =>
-      session
-        .wait(p.selector, { timeout: p.timeout ?? 5000, state: p.state ?? "visible", text: p.text })
-        .then((r) => text(`found: ${r.found}`, { r })),
   },
   {
     name: "cext_screenshot",
@@ -368,17 +203,6 @@ const tools: {
     run: () => session.close().then(() => text("closed")),
   },
   {
-    name: "cext_close_page",
-    label: "Close Page",
-    description:
-      "Close one page (default: the active page, or the page at index) without closing the browser. Use to get rid of tabs the extension opened itself (onboarding/marketing tabs) so they stop confusing active-tab resolution.",
-    promptSnippet: "Close a tab",
-    parameters: Type.Object({
-      index: Type.Optional(Type.Integer({ description: "Page index from the pages list (default: active page)" })),
-    }),
-    run: (p) => session.closePage(p.index).then(snap),
-  },
-  {
     name: "cext_reload",
     label: "Reload Extension",
     description:
@@ -400,7 +224,7 @@ const tools: {
       "Run many browser steps in ONE call — the cheapest way to drive a flow, and the only action surface. Each step (click/fill/press/select/hover/wait/open/switch/closePage/scroll/history/eval/screenshot/logs/metrics) returns a one-line result instead of a full page snapshot, so a 12-step flow costs one round trip instead of twelve. Returns one line per step, the final URL/title, and stoppedAt when a step fails.",
     promptSnippet: "Run many browser steps in a single call (cheapest way to drive a flow)",
     promptGuidelines: [
-      "Prefer cext_batch over a chain of cext_click/cext_fill/cext_press/cext_wait calls — same coverage, one API call instead of N.",
+      "cext_batch is the action surface: click/fill/press/select/hover/wait/scroll/history/open/switch/closePage/eval/screenshot/logs/metrics are steps in it, not tools of their own.",
       "End a batch with an {op:'eval'} step returning a compact object of the assertions you care about; that replaces a separate cext_snapshot.",
       "Pass snapshot:true to include the final page body text (default false — one-liners only).",
       "Steps run in order; stopOnError:true (default) stops at the first failure and reports stoppedAt.",
