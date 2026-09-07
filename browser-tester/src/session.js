@@ -430,6 +430,16 @@ export class ChromeExtSession {
   async cdp(method, params = {}, { target = "page" } = {}) {
     if (typeof method !== "string" || !method.trim()) throw new Error("cdp: method must be a non-empty string");
     if (params == null) params = {};
+    if (typeof params === "string") {
+      let s = params.trim();
+      if (!s) params = {};
+      else {
+        // pi's Type.Any can arrive as a JSON string (or double-stringified)
+        for (let i = 0; i < 2; i++) {
+          try { const p = JSON.parse(s); if (typeof p === "string") { s = p.trim(); continue; } params = p; break; } catch { break; }
+        }
+      }
+    }
     if (typeof params !== "object" || Array.isArray(params))
       throw new Error(`cdp params must be an object (got ${typeof params}) — e.g. {"expression":"location.href"}`);
     if (target !== "page" && target !== "browser") throw new Error(`cdp target must be "page" or "browser"`);
