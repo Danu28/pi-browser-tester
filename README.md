@@ -46,8 +46,9 @@ browser-tester/            ← copy this folder
 | `cext_press` | Press keys / shortcuts (Tab, Enter, Escape, Control+a, …) — global or after focusing an element (a11y flows) |
 | `cext_scroll` | Scroll to a selector, to top/bottom (infinite scroll, lazy-loaded lists), or by x/y pixels — returns the new scroll position |
 | `cext_eval` | Run JS in the active page (top-level `await` works; `chrome.*` is available on extension pages) |
+| `cext_batch` | **Many steps in one call** — `click`/`fill`/`press`/`select`/`hover`/`wait`/`open`/`switch`/`closePage`/`eval`/`screenshot`/`logs`/`metrics`, one line per step, `snapshot:true` for the final body text. The cheap way to drive a flow |
 | `cext_wait` | Non-throwing wait for a selector, text, or `state:'hidden'` (assertions) |
-| `cext_snapshot` / `cext_screenshot` | Read page state; screenshots of the page **or a single element** saved to `./artifacts/` and returned to the model |
+| `cext_snapshot` / `cext_screenshot` | Read page state; screenshots of the page **or a single element** saved to `./artifacts/` (path only by default — `inline:true` returns the image) |
 | `cext_metrics` | Page load performance: DOMContentLoaded/load timings, transferred bytes, resource counts by type |
 | `cext_logs` | Console / page-error / service-worker / network-failure / download logs (filter by level or source) |
 | `cext_close_page` | Close one tab (e.g. a tab an extension opens on install) |
@@ -58,6 +59,11 @@ browser-tester/            ← copy this folder
 
 ## Notes
 
+- **Cost:** every tool call is one model round trip, and a page snapshot is up
+  to 12k characters. Prefer `cext_batch` (N steps, one call) over a chain of
+  `cext_click`/`cext_fill`, end batches with an `eval` that returns the
+  assertions you care about, and leave screenshots at path-only. Actions whose
+  page text did not change report `(unchanged …)` instead of repeating it.
 - Only Chromium-based browsers can side-load extensions. Branded Chrome/Edge
   137+ removed `--load-extension`; use the default `chromium` channel (or older
   `chrome`/`msedge` builds).
