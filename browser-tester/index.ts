@@ -86,7 +86,7 @@ const tools: {
     name: "cext_launch",
     label: "Launch Browser",
     description:
-      "Launch (or relaunch after edits) a real browser. Pass extensionPath to load an unpacked Chrome extension for extension testing; omit it to launch a plain browser for website testing — then drive any http(s) page. On first use the bundled Chromium is downloaded automatically (~170 MB, one time).",
+      "Launch (or relaunch after edits) a real browser. Pass extensionPath to load an unpacked Chrome extension; omit it for plain website testing. Chromium (~170 MB) downloads automatically on first use.",
     promptSnippet: "Launch a browser (optionally with an unpacked Chrome extension loaded)",
     promptGuidelines: [
       "Use cext_launch before any other cext_* tool. Call it again after the user edits extension code — it tears down and relaunches fresh, which is the reload step.",
@@ -105,7 +105,7 @@ const tools: {
       ),
       channel: Type.Optional(
         Type.String({
-          description: "Browser channel: 'chromium' (default — Playwright's bundled Chrome for Testing; branded Chrome/Edge 137+ removed --load-extension, so they cannot side-load extensions) or 'chrome'/'msedge' for older browsers that still honor the flags",
+          description: "Browser channel: 'chromium' (default — Playwright's Chrome for Testing; branded Chrome/Edge 137+ dropped --load-extension)",
         })
       ),
     }),
@@ -130,7 +130,7 @@ const tools: {
     name: "cext_popup",
     label: "Open Popup",
     description:
-      "Open the extension's action popup (from action.default_popup in manifest.json) as a page and make it the active page. The previously active page keeps browser focus, so the extension still resolves chrome.tabs.query({active,lastFocusedWindow}) to the page under test. Use after cext_launch to test popup UI.",
+      "Open the extension's action popup (action.default_popup) as a page. The previously active page keeps browser focus, so chrome.tabs.query({active,lastFocusedWindow}) still resolves to the page under test.",
     promptSnippet: "Open the extension popup for UI testing",
     parameters: Type.Object({}),
     run: () => session.popup().then(snap),
@@ -139,7 +139,7 @@ const tools: {
     name: "cext_snapshot",
     label: "Snapshot Page",
     description:
-      "Return current URL, title, list of open pages, and the visible body text of the active page. Call after any action to see the page state.",
+      "Current URL, title, open pages and the body text of the active page — the only reader of page text (actions return one line, not the page).",
     promptSnippet: "Read the current page state (URL, title, body text)",
     parameters: Type.Object({}),
     run: () => session.snapshot().then(snap),
@@ -148,7 +148,7 @@ const tools: {
     name: "cext_screenshot",
     label: "Screenshot",
     description:
-      "Screenshot the active page (or just the element matching selector). The image is returned to the model and also saved under ./artifacts/.",
+      "Screenshot the active page (or just selector), saved under ./artifacts/. inline:true also returns the image to the model.",
     promptSnippet: "Take a screenshot of the visible page (or an element)",
     parameters: pick(["selector", "fullPage", "inline"]),
     run: (p) =>
@@ -169,7 +169,7 @@ const tools: {
     name: "cext_logs",
     label: "Extension Logs",
     description:
-      "Return console / page-error / service-worker log entries captured since launch (or since `since`). Levels: log, error, warning, debug, info, pageerror.",
+      "Console / page-error / service-worker / network / download entries captured since launch (or since `since`).",
     promptSnippet: "Read browser console and extension service-worker logs",
     parameters: pick(["level", "source", "since"]),
     run: (p) =>
@@ -187,7 +187,7 @@ const tools: {
     name: "cext_serve",
     label: "Serve Fixture Dir",
     description:
-      "Start (or restart) an ephemeral static http server for dir, returning its origin (http://127.0.0.1:<port>). Use to host local fixture pages so extension content scripts (matched on http/https) inject into them — file:// and data: pages do NOT run content scripts.",
+      "Serve dir over http://127.0.0.1:<port> for content-script testing — content scripts never run on file:// or data: pages.",
     promptSnippet: "Serve a local folder over http for content-script testing",
     parameters: Type.Object({
       dir: Type.String({ description: "Directory to serve (cwd-relative or absolute)" }),
@@ -197,7 +197,7 @@ const tools: {
   {
     name: "cext_close",
     label: "Close Browser",
-    description: "Close the browser and any static server. Session state (including logs) is reset on the next cext_launch.",
+    description: "Close the browser and any static server. Logs and state reset on the next cext_launch.",
     promptSnippet: "Shut down the test browser",
     parameters: Type.Object({}),
     run: () => session.close().then(() => text("closed")),
@@ -206,7 +206,7 @@ const tools: {
     name: "cext_reload",
     label: "Reload Extension",
     description:
-      "Pick up extension source edits: relaunches the browser with the same extension path and options. Chrome never respawns a side-loaded unpacked extension's service worker, so chrome.runtime.reload() would leave every chrome-extension:// URL dead — a relaunch is the reload.",
+      "Pick up extension source edits: relaunches with the same path and options. Chrome never respawns a side-loaded extension's service worker, so a relaunch is the reload.",
     promptSnippet: "Reload the extension after editing its source",
     parameters: Type.Object({}),
     run: () =>
@@ -221,7 +221,7 @@ const tools: {
     name: "cext_batch",
     label: "Batch Browser Steps",
     description:
-      "Run many browser steps in ONE call — the cheapest way to drive a flow, and the only action surface. Each step (click/fill/press/select/hover/wait/open/switch/closePage/scroll/history/eval/screenshot/logs/metrics) returns a one-line result instead of a full page snapshot, so a 12-step flow costs one round trip instead of twelve. Returns one line per step, the final URL/title, and stoppedAt when a step fails.",
+      "Run many browser steps in ONE call — the action surface. Each step (click/fill/press/select/hover/wait/open/switch/closePage/scroll/history/eval/screenshot/logs/metrics) returns one line, so a 12-step flow is one round trip. snapshot:true adds the final page text; stoppedAt names the step that failed.",
     promptSnippet: "Run many browser steps in a single call (cheapest way to drive a flow)",
     promptGuidelines: [
       "cext_batch is the action surface: click/fill/press/select/hover/wait/scroll/history/open/switch/closePage/eval/screenshot/logs/metrics are steps in it, not tools of their own.",
@@ -251,7 +251,7 @@ const tools: {
     name: "cext_cdp",
     label: "Raw CDP",
     description:
-      "Escape hatch: send a raw Chrome DevTools Protocol command (Network.enable, Browser.grantPermissions, Emulation.*, Page.captureScreenshot, …) to the active page or the browser. Use for anything the cext_* tools do not wrap.",
+      "Escape hatch: send a raw CDP command (Network.enable, Browser.grantPermissions, Emulation.*, …) to the active page or the browser.",
     promptSnippet: "Send a raw CDP command",
     parameters: Type.Object({
       method: Type.String({ description: "CDP method, e.g. 'Network.enable' or 'Browser.grantPermissions'" }),
