@@ -71,7 +71,7 @@ const batchLine = (r: any) => {
     case "screenshot":
       return `${head} → saved ${r.path}`;
     case "logs":
-      return `${head} → ${r.count} entries${r.entries.length ? `\n${r.entries.join("\n")}` : ""}`;
+      return `${head} → ${r.count} entries (next ${r.next})${r.entries.length ? `\n${r.entries.join("\n")}` : ""}`;
     case "metrics":
       return `${head} → dcl ${r.domContentLoaded}ms / load ${r.load}ms / ${(r.bytes / 1024).toFixed(1)} KB / ${r.resources} resources`;
     default:
@@ -368,9 +368,10 @@ const tools: {
     run: (p) =>
       session.logs({ level: p.level, source: p.source, since: p.since ?? 0 }).then((r) =>
         text(
-          r.entries.length === 0
-            ? "(no log entries)"
-            : r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`).join("\n"),
+          `${r.entries.length === 0 ? "(no log entries)" : r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`).join("\n")}\n` +
+            // details.next is for the human; the model only sees content, so the
+            // cursor has to be in the text or `since` is unusable.
+            `next: ${r.next} — pass as {since} to skip these entries next time`,
           { next: r.next }
         )
       ),

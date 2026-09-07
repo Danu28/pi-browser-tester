@@ -59,6 +59,29 @@ export class NotLaunchedError extends Error {
 
 const EXT_ID_RE = /chrome-extension:\/\/([a-p]{32})\//;
 
+// Positional line diff: keep the common head and tail, ship only the changed
+// middle. A click that bumps one counter otherwise re-sends the whole 12k body.
+// ponytail: prefix/suffix only, not LCS — a line that MOVED reads as changed.
+function changedLinesOnly(prev, next) {
+  let head = 0;
+  while (head < prev.length && head < next.length && prev[head] === next[head]) head++;
+  let tail = 0;
+  while (
+    tail < prev.length - head &&
+    tail < next.length - head &&
+    prev[prev.length - 1 - tail] === next[next.length - 1 - tail]
+  )
+    tail++;
+  const changed = next.slice(head, next.length - tail);
+  // Not worth the marker noise unless it actually cuts the payload.
+  if (changed.length > next.length * 0.75) return next.join("\n");
+  const out = [];
+  if (head) out.push(`… ${head} unchanged line(s) above — call cext_snapshot for the full text …`);
+  out.push(...changed);
+  if (tail) out.push(`… ${tail} unchanged line(s) below …`);
+  return out.join("\n");
+}
+
 // Chromium launch flags: extension-testing mode adds the side-load flags, plain
 // website-testing mode (launch without extensionPath) gets a vanilla browser.
 export function launchArgs(extDir) {
@@ -120,6 +143,7 @@ export class ChromeExtSession {
     this.logSeq = 0;
     this._cdp = null;
     this._lastBodyHash = null;
+    this._lastBodyLines = null;
   }
 
   _pushLog(source, level, text) {
@@ -246,13 +270,20 @@ export class ChromeExtSession {
       // non-HTML content (json/xml/pdf) — no body text
     }
     // Cost: an action that did not change the page was returning the same 12k
-    // chars again. Collapse repeats to a marker — an explicit cext_snapshot
-    // (dedupe:false) still gets the full text.
+    // chars again — and one that changed a single number returned all of it too.
+    // Collapse both: identical text -> a marker, small change -> only the
+    // changed lines. An explicit cext_snapshot (dedupe:false) still gets the
+    // full text.
+    const lines = bodyText.split("\n");
     const hash = createHash("sha1").update(bodyText).digest("hex");
     const unchanged = hash === this._lastBodyHash;
+    const prevLines = this._lastBodyLines;
     this._lastBodyHash = hash;
+    this._lastBodyLines = lines;
     if (dedupe && unchanged) {
       bodyText = "(unchanged — same body text as the previous snapshot; call cext_snapshot to read it again)";
+    } else if (dedupe && prevLines) {
+      bodyText = changedLinesOnly(prevLines, lines);
     }
     // Index by object identity, not URL: two tabs on the same URL (common after
     // an extension opens a tab of its own) must not report the wrong active one.
@@ -320,6 +351,7 @@ export class ChromeExtSession {
     this.logEntries = [];
     this.logSeq = 0;
     this._lastBodyHash = null;
+    this._lastBodyLines = null;
     this.extId = null;
     this.artifactsDir = join(cwd, "artifacts");
     mkdirSync(this.artifactsDir, { recursive: true });
@@ -669,7 +701,10 @@ export class ChromeExtSession {
     }
     let text;
     try {
-      text = JSON.stringify(raw, null, 2);
+      // Compact, not 2-space-indented: pretty-printing a 40-object result is
+      // ~30% more characters (newlines + indent) for whitespace the model does
+      // not read — and eval output is the largest thing a step returns.
+      text = JSON.stringify(raw);
     } catch {
       text = String(raw);
     }

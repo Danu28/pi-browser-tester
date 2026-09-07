@@ -63,7 +63,9 @@ browser-tester/            ← copy this folder
   to 12k characters. Prefer `cext_batch` (N steps, one call) over a chain of
   `cext_click`/`cext_fill`, end batches with an `eval` that returns the
   assertions you care about, and leave screenshots at path-only. Actions whose
-  page text did not change report `(unchanged …)` instead of repeating it.
+  page text did not change report `(unchanged …)` instead of repeating it, and a
+  page that changed in one place ships only the changed lines (`… N unchanged
+  line(s) above …`).
 - Only Chromium-based browsers can side-load extensions. Branded Chrome/Edge
   137+ removed `--load-extension`; use the default `chromium` channel (or older
   `chrome`/`msedge` builds).
