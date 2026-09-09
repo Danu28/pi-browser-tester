@@ -56,6 +56,66 @@ filling, waiting, evaluating, scrolling and going back are all ops inside the
 one call. The list lives in `OPS` (`src/session.js`) — it is the schema, the
 error message and this table's source of truth.
 
+> **Budget: 10 tools — new tool must delete one.** Prompt cost is bounded by tool count; add a batch op (one name + one case in `src/session.js`) instead of a new tool.
+
+**Loop in 3 lines:** `edit → install.bat → cext_reload → cext_batch` — that's the shortest path to green. `install.bat` warns `[install] STALE` if you forgot to re-copy.
+
+## Copy-paste batch examples — 3 flows that teach the pattern
+
+Each example is a single `cext_batch` call ending with an `eval` assertion — thrown error = failed step with index.
+
+**1. Dummy form (stable selector, randomized-id workaround on selectorshub.com):**
+
+The email id is randomized per load (`shub39`, `shub76`, …). Don't use `#shub39` — use a stable attribute:
+
+```json
+{
+  "steps": [
+    { "op": "click", "selector": ".userform input[type='email']" },
+    { "op": "fill", "selector": ".userform input[type='email']", "value": "tester@example.com" },
+    { "op": "fill", "selector": "#pass", "value": "Str0ngPass!23" },
+    { "op": "fill", "selector": ".userform input[name='company']", "value": "Pi Automation" },
+    { "op": "eval", "expression": "(async () => { const v = document.querySelector(`.userform input[type='email']`).value; if (!v) throw new Error('email is empty — shub randomized id workaround failed'); return {email: v}; })()" }
+  ]
+}
+```
+
+**2. Payment form — fill, submit and prove it reloaded:**
+
+```json
+{
+  "steps": [
+    { "op": "fill", "selector": "#cardName", "value": "Ada Lovelace" },
+    { "op": "fill", "selector": "#cardNumber", "value": "4111 1111 1111 1111" },
+    { "op": "fill", "selector": "#expiry", "value": "12/29" },
+    { "op": "fill", "selector": "#cvv", "value": "123" },
+    { "op": "click", "selector": "button:has-text(\"Pay\")" },
+    { "op": "eval", "expression": "(async () => { await new Promise(r => setTimeout(r, 800)); if (!location.href.endsWith('?')) throw new Error('Pay did not submit — url is ' + location.href); return {submitted: true}; })()" }
+  ]
+}
+```
+
+**3. Extension popup — serve, popup, assert via chrome.*:**
+
+```json
+{
+  "steps": [
+    { "op": "open", "url": "http://127.0.0.1:PORT/" },
+    { "op": "eval", "expression": "document.body.innerHTML.slice(0,12000)" },
+    { "op": "eval", "expression": "(async () => { const tabs = await chrome.tabs.query({active:true, lastFocusedWindow:true}); if (!tabs.length) throw new Error('popup cannot see host tab'); return {tabs: tabs.length}; })()" }
+  ]
+}
+```
+*Workflow: `cext_launch` with `extensionPath` → `cext_serve` (dir) → `open` the served URL → `cext_popup` → `cext_batch` as above. Use `eval` with `chrome.*` inside the popup — top-level `await` is retried inside an async IIFE.*
+
+### Selector resilience — 5 rules that prevent flaky flows
+
+- **Stable over random:** prefer `[type='email']`, `[name='company']`, `button:has-text("Pay")` over `#shub39` — selectorshub randomizes ids per load (`shub` prefix is the tell).
+- **Probe before you fill:** `eval("document.querySelectorAll('.userform input').length")` or `document.body.innerHTML.slice(0,12000)` to discover selectors without extra round trips.
+- **Wait for text, not just selector:** `{ "op": "wait", "text": "Tests complete" }` catches async renders that `wait` on a selector misses.
+- **Scroll before below-fold:** `{ "op": "scroll", "to": "bottom" }` or `{ "op": "scroll", "selector": "#footer" }` for lazy-loaded / infinite lists; clicks already scroll their target.
+- **Back-nav via history:** `{ "op": "history", "direction": "back" }` instead of re-opening the URL — preserves stack and is one step.
+
 ## Recorded scenarios (no model in the loop)
 
 A flow you will run more than once should not cost model round trips at all.
@@ -103,6 +163,7 @@ is two `cext_batch` calls.
   returning the assertions you care about, leave screenshots at path-only, and
   put any flow you will repeat in `scenarios/` — then it costs zero model calls
   to re-run.
+- **Artifacts:** screenshots and downloads land under `./artifacts/` (cwd-relative). They grow unbounded — prune regularly: `find artifacts -type f -mtime +7 -delete` or keep last 20. Screenshots are path-only by default; `inline:true` ships ~300–800k chars of base64 — only use when the model must see the image.
 - Only Chromium-based browsers can side-load extensions. Branded Chrome/Edge
   137+ removed `--load-extension`; use the default `chromium` channel (or older
   `chrome`/`msedge` builds).

@@ -21,33 +21,33 @@ const oneOf = (values: string[], description: string) =>
 
 // Shared param fields.
 const ms = (what: string) =>
-  Type.Optional(Type.Integer({ description: `${what} timeout in ms (default 5000)` }));
+  Type.Optional(Type.Integer({ description: "Timeout in ms (default 5000)" }));
 const selector = (description: string) => Type.String({ description });
 
 // One cext_batch step. Every op maps to an existing session method; unknown
 // keys are ignored by the runner, unknown ops fail the step with a clear list.
 const batchStep = Type.Object({
-  op: oneOf(OPS, "Operation to run"),
-  selector: Type.Optional(selector("Playwright selector (click/fill/press/select/hover/wait/screenshot)")),
-  value: Type.Optional(Type.String({ description: "Value for fill, or option value/label for select" })),
-  key: Type.Optional(Type.String({ description: "Key for press, e.g. 'Enter' or 'Control+a'" })),
-  to: Type.Optional(oneOf(["top", "bottom"], "For scroll: scroll to the top or bottom of the page")),
-  x: Type.Optional(Type.Integer({ description: "For scroll: horizontal scroll delta in px" })),
-  y: Type.Optional(Type.Integer({ description: "For scroll: vertical scroll delta in px" })),
-  direction: Type.Optional(oneOf(["back", "forward"], "For history: which way to navigate")),
-  text: Type.Optional(Type.String({ description: "For wait: wait for this visible text instead of a selector" })),
-  url: Type.Optional(Type.String({ description: "For open: URL to navigate to" })),
-  index: Type.Optional(Type.Integer({ description: "0-based element index for click, or page index for switch/closePage" })),
-  expression: Type.Optional(Type.String({ description: "For eval: JS expression or IIFE returning a value" })),
+  op: oneOf(OPS, "Operation"),
+  selector: Type.Optional(selector("Playwright selector")),
+  value: Type.Optional(Type.String({ description: "Value for fill/select" })),
+  key: Type.Optional(Type.String({ description: "Key for press (e.g. Enter)" })),
+  to: Type.Optional(oneOf(["top", "bottom"], "Scroll target")),
+  x: Type.Optional(Type.Integer({ description: "Horizontal scroll delta in px" })),
+  y: Type.Optional(Type.Integer({ description: "Vertical scroll delta in px" })),
+  direction: Type.Optional(oneOf(["back", "forward"], "History direction")),
+  text: Type.Optional(Type.String({ description: "Text to wait for" })),
+  url: Type.Optional(Type.String({ description: "URL to open" })),
+  index: Type.Optional(Type.Integer({ description: "Element or page index" })),
+  expression: Type.Optional(Type.String({ description: "JS expression or IIFE for eval" })),
   timeout: ms("Step"),
-  state: Type.Optional(oneOf(["visible", "hidden", "attached", "detached"], "For wait: element state (default visible)")),
-  newTab: Type.Optional(Type.Boolean({ description: "For open: new tab instead of navigating the active page" })),
-  waitUntil: Type.Optional(oneOf(["domcontentloaded", "load", "networkidle"], "For open (default domcontentloaded)")),
-  fullPage: Type.Optional(Type.Boolean({ description: "For screenshot: capture the full scrollable page" })),
-  inline: Type.Optional(Type.Boolean({ description: "For screenshot: also return the image to the model (default false)" })),
-  level: Type.Optional(oneOf(["log", "error", "warning", "debug", "info", "pageerror"], "For logs: level filter")),
-  source: Type.Optional(oneOf(["page", "worker", "network", "download", "workerevent"], "For logs: source filter")),
-  since: Type.Optional(Type.Integer({ description: "For logs: only entries with index >= since" })),
+  state: Type.Optional(oneOf(["visible", "hidden", "attached", "detached"], "Wait state")),
+  newTab: Type.Optional(Type.Boolean({ description: "Open in new tab" })),
+  waitUntil: Type.Optional(oneOf(["domcontentloaded", "load", "networkidle"], "Wait until")),
+  fullPage: Type.Optional(Type.Boolean({ description: "Capture full page" })),
+  inline: Type.Optional(Type.Boolean({ description: "Also return image (default false)" })),
+  level: Type.Optional(oneOf(["log", "error", "warning", "debug", "info", "pageerror"], "Log level")),
+  source: Type.Optional(oneOf(["page", "worker", "network", "download", "workerevent"], "Log source")),
+  since: Type.Optional(Type.Integer({ description: "Start index for logs" })),
 });
 
 // Result shapes. Most tools return a page snapshot; the rest return plain text.
@@ -86,26 +86,26 @@ const tools: {
     name: "cext_launch",
     label: "Launch Browser",
     description:
-      "Launch (or relaunch after edits) a real browser. Pass extensionPath to load an unpacked Chrome extension; omit it for plain website testing. Chromium (~170 MB) downloads automatically on first use.",
-    promptSnippet: "Launch a browser (optionally with an unpacked Chrome extension loaded)",
+      "Launch a real browser. Pass extensionPath for extension testing; omit for plain website testing. Chromium auto-downloads if missing.",
+    promptSnippet: "Launch a browser, optionally with an extension",
     promptGuidelines: [
-      "Use cext_launch before any other cext_* tool. Call it again after the user edits extension code — it tears down and relaunches fresh, which is the reload step.",
-      "Website/UI testing: omit extensionPath entirely and drive pages with cext_batch steps (open/click/fill/select/hover/wait/scroll/history/eval/screenshot/logs/metrics); read the page with cext_snapshot.",
-      "Extension testing: pass the absolute or cwd-relative path to the extension folder containing manifest.json, e.g. './sample-extension', then use cext_popup / cext_reload, and cext_serve for content-script flows.",
+      "Use cext_launch before any other cext_* tool. Call it again after edits — it tears down and relaunches fresh.",
+      "Website testing: omit extensionPath and drive pages with cext_batch (open/click/fill/select/hover/wait/scroll/history/eval/screenshot/logs/metrics); read page with cext_snapshot.",
+      "Extension testing: pass path to unpacked extension folder (with manifest.json), e.g. './sample-extension', then use cext_popup / cext_reload and cext_serve.",
     ],
     parameters: Type.Object({
       extensionPath: Type.Optional(
         Type.String({
-          description: "Path to the unpacked extension folder (contains manifest.json). Omit for plain website testing.",
+          description: "Unpacked extension path (with manifest.json).",
         })
       ),
-      url: Type.Optional(Type.String({ description: "Optional URL to open after launch" })),
+      url: Type.Optional(Type.String({ description: "URL to open after launch" })),
       headless: Type.Optional(
-        Type.Boolean({ description: "Run without a visible window (default false — unreliable for extensions in real Chrome)" })
+        Type.Boolean({ description: "Headless mode (default false)" })
       ),
       channel: Type.Optional(
         Type.String({
-          description: "Browser channel: 'chromium' (default — Playwright's Chrome for Testing; branded Chrome/Edge 137+ dropped --load-extension)",
+          description: "Browser channel (default chromium)",
         })
       ),
     }),
@@ -130,8 +130,8 @@ const tools: {
     name: "cext_popup",
     label: "Open Popup",
     description:
-      "Open the extension's action popup (action.default_popup) as a page. The previously active page keeps browser focus, so chrome.tabs.query({active,lastFocusedWindow}) still resolves to the page under test.",
-    promptSnippet: "Open the extension popup for UI testing",
+      "Open the extension popup as a page. Keeps focus on previous page so tabs.query resolves correctly.",
+    promptSnippet: "Open the extension popup",
     parameters: Type.Object({}),
     run: () => session.popup().then(snap),
   },
@@ -139,8 +139,8 @@ const tools: {
     name: "cext_snapshot",
     label: "Snapshot Page",
     description:
-      "Current URL, title, open pages and the body text of the active page — the only reader of page text (actions return one line, not the page).",
-    promptSnippet: "Read the current page state (URL, title, body text)",
+      "Page URL, title, open pages and body text — the only reader of body text.",
+    promptSnippet: "Read page URL, title and body text",
     parameters: Type.Object({}),
     run: () => session.snapshot().then(snap),
   },
@@ -148,17 +148,14 @@ const tools: {
     name: "cext_screenshot",
     label: "Screenshot",
     description:
-      "Screenshot the active page (or just selector), saved under ./artifacts/. inline:true also returns the image to the model.",
-    promptSnippet: "Take a screenshot of the visible page (or an element)",
+      "Screenshot page or one element to ./artifacts/. Add inline:true to return the image.",
+    promptSnippet: "Screenshot the page or an element",
     parameters: pick(["selector", "fullPage", "inline"]),
     run: (p) =>
       session.screenshot({ fullPage: p.fullPage ?? false, selector: p.selector, inline: p.inline ?? false }).then((shot) => ({
         content: shot.data
           ? [
               { type: "text", text: `screenshot saved: ${shot.path}` },
-              // Flat shape is what pi's tool-result pipeline reads; the nested
-              // source:{type:"base64"} form is Anthropic's outbound wire format
-              // and leaves data undefined here (Buffer.from(undefined) -> throw).
               { type: "image", data: shot.data, mimeType: "image/png" },
             ]
           : [{ type: "text", text: `screenshot saved: ${shot.path} (image not returned — pass inline:true to see it)` }],
@@ -169,15 +166,13 @@ const tools: {
     name: "cext_logs",
     label: "Extension Logs",
     description:
-      "Console / page-error / service-worker / network / download entries captured since launch (or since `since`).",
-    promptSnippet: "Read browser console and extension service-worker logs",
+      "Console, page-error, worker, network and download logs since launch.",
+    promptSnippet: "Read console and extension logs",
     parameters: pick(["level", "source", "since"]),
     run: (p) =>
       session.logs({ level: p.level, source: p.source, since: p.since ?? 0 }).then((r) =>
         text(
           `${r.entries.length === 0 ? "(no log entries)" : r.entries.map((e) => `[${e.i}] ${e.source}/${e.level}: ${e.text}`).join("\n")}\n` +
-            // details.next is for the human; the model only sees content, so the
-            // cursor has to be in the text or `since` is unusable.
             `next: ${r.next} — pass as {since} to skip these entries next time`,
           { next: r.next }
         )
@@ -187,18 +182,18 @@ const tools: {
     name: "cext_serve",
     label: "Serve Fixture Dir",
     description:
-      "Serve dir over http://127.0.0.1:<port> for content-script testing — content scripts never run on file:// or data: pages.",
-    promptSnippet: "Serve a local folder over http for content-script testing",
+      "Serve a local folder over http://127.0.0.1 for content-script testing.",
+    promptSnippet: "Serve a local folder for content scripts",
     parameters: Type.Object({
-      dir: Type.String({ description: "Directory to serve (cwd-relative or absolute)" }),
+      dir: Type.String({ description: "Directory to serve" }),
     }),
     run: (p, ctx) => session.serve(normPath(p.dir), { cwd: ctx.cwd }).then((srv) => text(`serving ${srv.origin}`, { srv })),
   },
   {
     name: "cext_close",
     label: "Close Browser",
-    description: "Close the browser and any static server. Logs and state reset on the next cext_launch.",
-    promptSnippet: "Shut down the test browser",
+    description: "Close the browser and static server. State resets on next launch.",
+    promptSnippet: "Close the browser",
     parameters: Type.Object({}),
     run: () => session.close().then(() => text("closed")),
   },
@@ -206,8 +201,8 @@ const tools: {
     name: "cext_reload",
     label: "Reload Extension",
     description:
-      "Pick up extension source edits: relaunches with the same path and options. Chrome never respawns a side-loaded extension's service worker, so a relaunch is the reload.",
-    promptSnippet: "Reload the extension after editing its source",
+      "Reload the extension by relaunching the browser with the same options.",
+    promptSnippet: "Reload the extension",
     parameters: Type.Object({}),
     run: () =>
       session.reloadExtension().then((r) =>
@@ -221,21 +216,21 @@ const tools: {
     name: "cext_batch",
     label: "Batch Browser Steps",
     description:
-      "Run many browser steps in ONE call — the action surface. Each step (click/fill/press/select/hover/wait/open/switch/closePage/scroll/history/eval/screenshot/logs/metrics) returns one line, so a 12-step flow is one round trip. snapshot:true adds the final page text; stoppedAt names the step that failed.",
-    promptSnippet: "Run many browser steps in a single call (cheapest way to drive a flow)",
+      "Run N browser steps in one call — the action surface (click/fill/press/.../eval). One call = one round trip.",
+    promptSnippet: "Run many browser steps in one call",
     promptGuidelines: [
       "cext_batch is the action surface: click/fill/press/select/hover/wait/scroll/history/open/switch/closePage/eval/screenshot/logs/metrics are steps in it, not tools of their own.",
-      "End a batch with an {op:'eval'} step returning a compact object of the assertions you care about; that replaces a separate cext_snapshot.",
-      "Pass snapshot:true to include the final page body text (default false — one-liners only).",
-      "Steps run in order; stopOnError:true (default) stops at the first failure and reports stoppedAt.",
+      "End a batch with an {op:'eval'} step returning the assertions you care about; that replaces a separate snapshot.",
+      "Pass snapshot:true to include body text (default false — one-liners only).",
+      "Steps run in order; stopOnError:true stops at first failure and reports stoppedAt.",
     ],
     parameters: Type.Object({
       steps: Type.Array(batchStep, { description: "Steps to run, in order" }),
       snapshot: Type.Optional(
-        Type.Boolean({ description: "Include the final page body text (default false)" })
+        Type.Boolean({ description: "Include body text (default false)" })
       ),
       stopOnError: Type.Optional(
-        Type.Boolean({ description: "Stop at the first failing step (default true)" })
+        Type.Boolean({ description: "Stop at first failure (default true)" })
       ),
     }),
     run: (p) =>
@@ -251,12 +246,12 @@ const tools: {
     name: "cext_cdp",
     label: "Raw CDP",
     description:
-      "Escape hatch: send a raw CDP command (Network.enable, Browser.grantPermissions, Emulation.*, …) to the active page or the browser.",
+      "Send a raw CDP command to the page or browser.",
     promptSnippet: "Send a raw CDP command",
     parameters: Type.Object({
-      method: Type.String({ description: "CDP method, e.g. 'Network.enable' or 'Browser.grantPermissions'" }),
+      method: Type.String({ description: "CDP method, e.g. Network.enable" }),
       params: Type.Optional(Type.Any({ description: "CDP params object" })),
-      target: Type.Optional(oneOf(["page", "browser"], "Send to the active page (default) or the browser")),
+      target: Type.Optional(oneOf(["page", "browser"], "Target: page or browser")),
     }),
     run: (p) =>
       session.cdp(p.method, p.params ?? {}, { target: p.target ?? "page" }).then((r) =>
@@ -266,8 +261,6 @@ const tools: {
 ];
 
 export default function browserTester(pi: ExtensionAPI) {
-  // pi runs sibling tool calls from one assistant message concurrently, so every
-  // cext_* op goes through a single chain and cannot race the browser.
   let busy = Promise.resolve();
   const serial = (fn: () => Promise<any>) => {
     const run = busy.then(fn, fn);
@@ -287,7 +280,6 @@ export default function browserTester(pi: ExtensionAPI) {
         try {
           return await serial(() => def.run(params, { cwd: ctx.cwd, onUpdate }));
         } catch (e) {
-          // throw => tool marked isError and reported to the LLM
           throw new Error(fail(e));
         }
       },
