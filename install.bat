@@ -12,6 +12,13 @@ if not exist "%SRC%\index.ts" (
   exit /b 1
 )
 
+rem --- staleness check: warn if installed copy is older than source (you edited but forgot to re-run) ---
+if exist "%DST%\index.ts" (
+  xcopy /L /D /E /Y "%SRC%\*" "%DST%\" 2>nul | findstr /C:"0 File(s)" >nul || echo [install] STALE — re-run install.bat ^(source newer than installed copy^)
+)
+rem Alternative: junction (mklink /J) makes edits live without re-copy, but needs Developer Mode and can surprise git/pi.
+rem   rmdir /s /q "%DST%" 2>nul & mklink /J "%DST%" "%SRC%" & echo [install] junction created & endlocal & exit /b 0
+
 if exist "%DST%" rmdir /s /q "%DST%"
 mkdir "%DST%\src"
 
