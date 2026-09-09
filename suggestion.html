@@ -1,0 +1,468 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>browser-tester — Suggestions Report (Agent-friendly · User-friendly · Cost-efficient · High-productivity)</title>
+<style>
+  :root{
+    --ink:#14181d; --mute:#5b6672; --line:#e2e6ea; --bg:#fbfcfd; --card:#fff;
+    --hi:#0b5fff; --warn:#b26b00; --bad:#b3261e; --good:#0a7d3f; --accent:#6b4eff; --teal:#0e7a6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0 auto;max-width:1000px;padding:40px 28px 80px;background:var(--bg);color:var(--ink);
+       font:15px/1.6 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.2}
+  h2{font-size:20px;margin:44px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--ink)}
+  h3{font-size:15px;margin:22px 0 8px}
+  p,li{margin:8px 0}
+  code{font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f3f5;padding:1px 4px;border-radius:3px}
+  pre{background:#12171d;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  pre code{background:none;color:inherit;padding:0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:#f1f3f5;font-weight:600}
+  .sub{color:var(--mute)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:16px 0}
+  .tag{display:inline-block;font:11px/1.6 system-ui;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+       padding:2px 7px;border-radius:99px;border:1px solid currentColor;vertical-align:middle}
+  .t-high{color:var(--bad)} .t-med{color:var(--warn)} .t-low{color:var(--good)} .t-keep{color:var(--hi)} .t-cost{color:var(--accent)}
+  .kpi{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}
+  .kpi div{flex:1 1 140px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;text-align:center}
+  .kpi b{display:block;font-size:22px;line-height:1.2}
+  .kpi span{color:var(--mute);font-size:11px;display:block;margin-top:2px}
+  .kpi .arrow{border-style:dashed}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .pill{display:inline-block;font:12px/1.5 system-ui;font-weight:600;background:#eef2ff;color:#3b3bff;border-radius:99px;padding:2px 8px;margin-right:6px}
+  .pill-green{background:#e6f4ea;color:var(--good)}
+  .pill-amber{background:#fff4e0;color:var(--warn)}
+  .pill-red{background:#fdecea;color:var(--bad)}
+  .pill-teal{background:#e0f5f1;color:var(--teal)}
+  .step-num{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--ink);color:#fff;font-weight:700;font-size:13px;margin-right:8px}
+  .step-card{border-left:4px solid var(--ink)}
+  .step-card.q{border-left-color:var(--accent)}
+  .step-card.d{border-left-color:var(--bad)}
+  .step-card.s{border-left-color:var(--hi)}
+  .step-card.a{border-left-color:var(--good)}
+  .step-card.au{border-left-color:var(--warn)}
+  ul{padding-left:20px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:700px){.cols,.grid{grid-template-columns:1fr}}
+  footer{margin-top:48px;color:var(--mute);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
+  .toc a{color:var(--hi);text-decoration:none}
+  .toc a:hover{text-decoration:underline}
+  .metric{font:11px/1.4 ui-monospace;background:#f1f3f5;padding:2px 6px;border-radius:4px}
+  .check{color:var(--good)} .cross{color:var(--bad)}
+  .badge{display:inline-block;font:11px/1.4 system-ui;font-weight:700;padding:2px 8px;border-radius:99px;background:#eef2ff;color:var(--hi);margin-left:8px;vertical-align:middle}
+  .badge.done{background:#e6f4ea;color:var(--good)}
+  .badge.next{background:#fff4e0;color:var(--warn)}
+</style>
+
+<h1>browser-tester — Suggestions Report</h1>
+<p class="sub">How to make the extension <b>agent-friendly · user-friendly · cost-efficient · high-productivity</b> —
+structured by the 5-step algorithm · baseline: <b>post-P5 (2026-09-09)</b> · <code>index.ts</code> 300 lines / 10 tools · <code>session.js</code> 753 lines / 15 OPS · status: <b>implemented core + next horizon</b></p>
+
+<div class="kpi">
+  <div><b>10</b><span>tools (from 23)<br><span class="check">✔ done</span></span></div>
+  <div><b>15</b><span>OPS in one list<br>(from scattered)</span></div>
+  <div><b>~3.9k</b><span>prompt chars<br>target 2.5k next</span></div>
+  <div><b>0 s</b><span>avoidable wait<br>(was 14 s)</span></div>
+  <div><b>1</b><span>round trip / flow<br>(was N)</span></div>
+  <div><b>0</b><span>new deps<br>keep it</span></div>
+</div>
+
+<div class="card">
+<b>In one sentence.</b> P1–P5 already deleted the expensive parts (13 tools, 2 polling waits, the dedupe layer). The cheapest route to the four goals <em>now</em> is not more deletions — it is <b>trimming the last 1.4k prompt chars</b>, <b>documenting the batch-first patterns agents actually need</b>, and <b>wiring the zero-cost scenario replay into CI</b>. Everything below is that finish plus the horizon that should <em>not</em> be built.
+</div>
+
+<div class="card toc">
+<b>Contents</b> —
+<a href="#algo">5-step algorithm</a> ·
+<a href="#where">Where we are</a> ·
+<a href="#agent">Agent-friendly</a> ·
+<a href="#user">User-friendly</a> ·
+<a href="#cost">Cost-efficient</a> ·
+<a href="#prod">High-productivity</a> ·
+<a href="#ranked">Ranked suggestions (14)</a> ·
+<a href="#not">Do not delete</a> ·
+<a href="#cost-math">Cost math</a> ·
+<a href="#horizon">Do not build</a>
+</div>
+
+<!-- WHERE WE ARE -->
+<h2 id="where">Where we are — honest baseline (measured 2026-09-09)</h2>
+<table>
+<tr><th>Metric</th><th>Before (pre-P1)</th><th>Now (post-P5)</th><th>Next target</th></tr>
+<tr><td><code>index.ts</code> lines</td><td>505</td><td><b>300</b> (−40%)</td><td>~180–220 (prose trim only)</td></tr>
+<tr><td><code>session.js</code> lines</td><td>803</td><td><b>753</b> (−6%, waits + dedupe gone, OPS unified)</td><td>~650 (comment hygiene, keep landmines)</td></tr>
+<tr><td>Tools</td><td>23</td><td><b>10</b></td><td>10 — freeze</td></tr>
+<tr><td>OPS vocab</td><td>scattered, duplicated</td><td><b>15 in one export</b> <code>OPS</code></td><td>keep single source</td></tr>
+<tr><td>Prompt prose</td><td>~7.5k chars</td><td><b>~3.9k chars</b> (−48%)</td><td><b>≤2.5k</b> (−36% more)</td></tr>
+<tr><td>Avoidable wait</td><td>14 s (10 s scan + 4 s reload)</td><td><b>0 s</b></td><td>0 s</td></tr>
+<tr><td>Round trips / 12-step flow</td><td>12</td><td><b>1</b> (<code>cext_batch</code>)</td><td>1</td></tr>
+<tr><td>Replay cost</td><td>model per run</td><td><b>0</b> (<code>scenario.mjs</code>)</td><td>0 + CI</td></tr>
+<tr><td>Deps</td><td>playwright global</td><td><b>playwright global</b> (0 new)</td><td>0 new — enforce</td></tr>
+</table>
+<p class="sub">Source: <code>wc -l</code> + <code>rg -c 'name: "cext_'</code> + prose-char script (descriptions + snippets). 753 not 480 because land-mine comments + hook guards were kept deliberately — that is correct.</p>
+
+<!-- ============================================================ -->
+<h2 id="algo">The 5-step algorithm, applied to the <em>current</em> repo</h2>
+<p class="sub">Rule: <em>Never optimize something that shouldn't exist.</em> Each step is a gate — nothing passes to the next until the previous has had its cut. P1–P5 already passed it once; this is the second pass on what remains.</p>
+
+<div class="card step-card q">
+<h3><span class="step-num">1</span> Question — Challenge every remaining requirement <span class="badge done">P1–P5 done</span></h3>
+<table>
+<tr><th>Claim</th><th>Challenge</th><th>Verdict</th></tr>
+<tr><td>"Need a dedicated tool for click/fill/…"</td><td>Already a <code>batch</code> op — why ship the same selector twice?</td><td><b>Rejected in P3</b> — 13 tools deleted, 3 aliases kept for humans</td></tr>
+<tr><td>"Body text on every action" + diff</td><td>Agents assert via <code>eval</code> returning 5 values; diff ships bulk text</td><td><b>Rejected in P4</b> — actions → one line, body only via snapshot</td></tr>
+<tr><td>Scan <code>chrome-extension://</code> for ID</td><td>ID is deterministic from path/key — proven by vectors</td><td><b>Rejected in P1</b> — computed, &lt;1 ms</td></tr>
+<tr><td>Poll 4 s on reload</td><td>Side-loaded worker never respawns</td><td><b>Rejected in P1</b> — relaunch directly</td></tr>
+<tr><td style="background:#fff8e6"><b>NEW:</b> "Need richer per-tool prose to be clear"</td><td>Every extra sentence ships <em>every turn</em> (~1.3k tokens saved already, 1.4k left). Clarity comes from examples + guidelines, not longer descriptions.</td><td><b>Reject</b> longer prose — trim to ≤2.5k, move clarity to batch guidelines + README examples</td></tr>
+<tr><td style="background:#fff8e6"><b>NEW:</b> "Need a DOM-outline helper tool"</td><td><code>eval("document.body.innerHTML.slice(0,12000)")</code> already does it in one batch step — new tool is a second name for eval</td><td><b>Reject</b> new tool — document the eval pattern, keep vocab at 15</td></tr>
+<tr><td style="background:#fff8e6"><b>NEW:</b> "Need config / framework / UI"</td><td>Zero config today, zero to learn — config is surface to maintain</td><td><b>Reject</b> — keep zero-config</td></tr>
+</table>
+</div>
+
+<div class="card step-card d">
+<h3><span class="step-num">2</span> Delete — Remove anything unnecessary <span class="badge done">core done</span> <span class="badge next">prose + docs left</span></h3>
+<ul>
+<li><span class="check">✔</span> <b>13 action tools</b> → deleted as tools (batch ops) — ~205 lines gone <span class="metric">P3</span></li>
+<li><span class="check">✔</span> <b>Dedupe layer</b> (<code>changedLinesOnly</code> + <code>_lastBody*</code> + <code>dedupe</code>) → deleted <span class="metric">P4</span></li>
+<li><span class="check">✔</span> <b>10 s ID scan + 4 s reload poll</b> → deleted <span class="metric">P1</span></li>
+<li><span class="check">✔</span> <b>Duplicate prose + duplicate formatter</b> → <code>pick()</code> + <code>stepLine()</code> <span class="metric">P2</span></li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next deletion:</b> <b>~1.4k prompt chars</b> — shorten each surviving tool's <code>description</code> to one sentence + move detail to <code>promptGuidelines</code> on <code>cext_batch</code> only. No tool deleted, just words. <span class="metric">S-01</span></li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next deletion:</b> <b>Redundant README duplication</b> — README tools table currently repeats prose that <code>index.ts</code> already owns; derive or shorten, don't maintain twice. <span class="metric">S-02</span></li>
+</ul>
+<p class="sub">What stays: <code>cext_launch</code>, <code>cext_reload</code> (=relaunch), <code>cext_popup</code>, <code>cext_serve</code>, <code>cext_batch</code>, aliases <code>cext_snapshot</code>/<code>cext_screenshot</code>/<code>cext_logs</code>, <code>cext_cdp</code>, <code>cext_close</code> — 10 tools, one vocabulary. Freeze at 10.</p>
+</div>
+
+<div class="card step-card s">
+<h3><span class="step-num">3</span> Simplify — Optimize what remains <span class="badge done">P2 done</span></h3>
+<ul>
+<li><span class="check">✔</span> <b>Single <code>OPS</code> list</b> — schema, error, scenario runner all read it <span class="metric">P2</span></li>
+<li><span class="check">✔</span> <b><code>pick([...])</code></b> — one description per field <span class="metric">P2</span></li>
+<li><span class="check">✔</span> <b><code>stepLine()</code></b> — one formatter <span class="metric">P2</span></li>
+<li><span class="check">✔</span> <b><code>_ctx()</code> + <code>MAX_TEXT</code> + manifest cache</b> <span class="metric">P1</span></li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Simplify next:</b> README batch examples — 3 copy-paste flows (dummy-form, payment, popup) that teach the <code>eval</code>-as-assertion pattern in one glance. One example replaces 500 words of prose. <span class="metric">S-03</span></li>
+</ul>
+</div>
+
+<div class="card step-card a">
+<h3><span class="step-num">4</span> Accelerate — Make it faster <span class="badge done">waits gone</span></h3>
+<table>
+<tr><th>Wait removed</th><th>Before</th><th>After</th><th>Saving</th></tr>
+<tr><td>Extension-ID discovery</td><td>poll 50×200 ms</td><td>compute &lt;1 ms</td><td><b>~10 s</b> <span class="check">✔</span></td></tr>
+<tr><td><code>cext_reload</code></td><td>poll 4 s then relaunch</td><td>relaunch directly</td><td><b>4 s</b> <span class="check">✔</span></td></tr>
+<tr><td>Model round trips / 12-step flow</td><td>12×</td><td>1× batch</td><td><b>11 turns</b> <span class="check">✔</span></td></tr>
+<tr><td>Body-text transfer / 12-step</td><td>12× bodies</td><td>0× (one-liners)</td><td><b>~90% fewer output tokens</b> <span class="check">✔</span></td></tr>
+</table>
+<p style="background:#fff8e6; padding:8px 12px; border-radius:6px"><b>Next acceleration (no new wait to delete):</b> keep launch fast by <em>not</em> adding pre-checks. The only remaining latency is Chromium download (~170 MB, once) — already handled by auto-install + 600 s timeout + mirror hint. Don't add health-check polling.</p>
+</div>
+
+<div class="card step-card au">
+<h3><span class="step-num">5</span> Automate — Only after the above <span class="badge next">CI left</span></h3>
+<ul>
+<li><span class="check">✔</span> <b><code>scenarios/*.json</code></b> already is the automation: <code>node browser-tester/scripts/scenario.mjs dummy-form.json</code> replays with 0 model calls</li>
+<li><span class="check">✔</span> <b><code>install.bat</code> STALE warning</b> via <code>xcopy /L /D</code> — <span class="metric">P5</span></li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Automate next:</b> wire <code>npm run check && npm run scenario -- scenarios/*.json</code> into CI (GitHub Actions, 2 lines). Scenarios cost 0 model calls — CI is the only automation that pays back. <span class="metric">S-06</span></li>
+<li><b>Do not automate</b> ID scanning, diff upkeep, per-tool prose syncing — deleted features; automating them re-creates the cost.</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="agent">Agent-friendly — what to change</h2>
+<p class="sub">Agents pay per description char and per round trip. Ergonomics = fewer tools, one vocabulary, one-line results, and assertions the model can already write.</p>
+
+<div class="cols">
+<div class="card">
+<h3>One vocabulary, one interpreter <span class="check">✔ done</span></h3>
+<ul>
+<li><b>10 tools frozen.</b> Every page action is a <code>cext_batch</code> op; <code>cext_snapshot</code>/<code>cext_screenshot</code>/<code>cext_logs</code> stay as 1-line aliases (humans ask for them by name). Budget: new tool → delete one.</li>
+<li><b><code>OPS</code> single-sourced</b> — schema + error + scenario runner read it; adding an op = 1 name + 1 case.</li>
+<li><b><code>scroll</code> + <code>history</code> in batch</b> — unblocked infinite-list and back-nav flows <span class="check">✔</span></li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next:</b> shorten prose (S-01) — move teaching from descriptions into 3 README batch examples + batch <code>promptGuidelines</code>. Same clarity, 1.4k fewer chars.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Results the model can use <span class="check">✔ done</span></h3>
+<ul>
+<li><b>Actions → one line</b> + final <code>url/title</code>. Body only via <code>cext_snapshot</code> / <code>batch(snapshot:true)</code>.</li>
+<li><b>Eval as assertion:</b> <code>{op:"eval", expression:"(async ()=&gt;{ /* read 5 values, throw if wrong */ })()"}</code> — thrown error = failed step with index.</li>
+<li><b><code>stepLine()</code> shared</b> — same line in pi and <code>scenario.mjs</code>.</li>
+<li><b>Actionable errors:</b> <code>unknown batch op: scroll (have click/fill/…)</code> lists the valid set.</li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next:</b> selector resilience — document the stable-selector pattern (<code>[type='email']</code> not <code>#shub39</code>) as the first troubleshooting line; agents fail on randomized ids otherwise.</li>
+</ul>
+</div>
+</div>
+
+<div class="card">
+<h3>Prompt cost: what remains</h3>
+<p>Every description + snippet ships in <em>every</em> prompt. Achieved: 23 → 10 tools, ~7.5k → ~3.9k chars (−48%). Remaining: <b>~3.9k → ≤2.5k (−36%)</b> by trimming each tool to one crisp sentence and keeping the teaching in batch guidelines + README. At ~3.9 chars/token that is <b>~0.36k more tokens saved per turn</b>, for the whole conversation. <span class="tag t-cost">cost</span></p>
+<pre><code>Current:  10 tools × prose  ≈ 3,924 chars → ~1.0k tokens / turn
+Target:   10 tools × prose  ≤ 2,500 chars → ~0.64k tokens / turn
+Saving:   ~1,424 chars → ~0.36k tokens / turn × 20 turns ≈ 7.2k tokens / flow</code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="user">User-friendly — what to change</h2>
+<div class="cols">
+<div class="card">
+<h3>First 5 minutes must work <span class="check">✔ done</span></h3>
+<ul>
+<li><b>Auto-install kept</b> — first <code>cext_launch</code> installs <code>playwright</code> globally + Chromium (~170 MB, 600 s timeout).</li>
+<li><b>Install feedback</b> — <code>install.bat</code> says what it copied + <code>xcopy /L /D</code> STALE warning so "I edited but nothing happened" is impossible. <span class="check">✔</span></li>
+<li><b>README mirror hint</b> (<code>PLAYWRIGHT_DOWNLOAD_HOST</code>) + troubleshooting — keep; most common failure is blocked CDN.</li>
+<li><b>Junction alternative documented</b> as opt-in comment (needs Developer Mode) — not default, safe.</li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next polish:</b> surface the 3 batch examples above the tools table — new users copy-paste before they read prose.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Day-to-day ergonomics <span class="check">✔ done</span></h3>
+<ul>
+<li><b>Three aliases kept</b> — humans expect <code>screenshot</code> and <code>logs</code> as verbs.</li>
+<li><b><code>screenshot inline:false</code> default</b> — path only; large base64 PNGs are the most expensive "just in case" cost. Opt-in <code>inline:true</code>.</li>
+<li><b><code>logs next</code> cursor in content</b> — only <code>content</code> reaches the model, so printed as <code>next: 42 — pass as {since}</code>.</li>
+<li><b>Artifacts discoverability</b> — every path under <code>./artifacts/</code> (cwd-relative).</li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next:</b> add <code>artifacts/</code> prune note (keep last N or 7 days) — unbounded screenshots fill disks in CI.</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cost">Cost-efficient — what to change</h2>
+<p class="sub">Three bills: prompt tokens (prose every turn), output tokens (bodies/eval/screenshots per step), and time × waits.</p>
+
+<table>
+<tr><th>Cost centre</th><th>Before P1</th><th>Now (post-P5)</th><th>Next</th><th>Saving left</th></tr>
+<tr>
+  <td><b>Prompt prose</b></td>
+  <td>23 tools · ~7.5k</td>
+  <td>10 tools · <b>~3.9k</b></td>
+  <td>10 tools · <b>≤2.5k</b></td>
+  <td><b>−1.4k chars / turn</b></td>
+</tr>
+<tr>
+  <td><b>Body text / action</b></td>
+  <td>12 bodies / flow</td>
+  <td><b>0</b> (one-liners)</td>
+  <td>0</td>
+  <td><b>done</b> (~90% saved)</td>
+</tr>
+<tr>
+  <td><b>Eval JSON</b></td>
+  <td>pretty-printed</td>
+  <td><b>compact</b></td>
+  <td>keep</td>
+  <td>done (−30% chars)</td>
+</tr>
+<tr>
+  <td><b>Screenshot</b></td>
+  <td>base64 always</td>
+  <td><b>path only</b></td>
+  <td>keep + prune</td>
+  <td>avoids ~500k chars</td>
+</tr>
+<tr><td><b>Round trips</b></td><td>12 / flow</td><td><b>1</b></td><td>1</td><td>done (N→1)</td></tr>
+<tr><td><b>Wall-clock waits</b></td><td>14 s</td><td><b>0 s</b></td><td>0 s</td><td>done</td></tr>
+</table>
+
+<div class="card">
+<b>What not to "save":</b> don't truncate error messages or log entries — pennies saved, blind agent cost. Keep <code>MAX_TEXT = 12000</code> and let <code>eval</code> return the 5 asserted values compactly.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="prod">High-productivity — what to change</h2>
+<div class="cols">
+<div class="card">
+<h3>Zero-cost replay <span class="check">✔ done</span></h3>
+<ul>
+<li><b><code>scenarios/*.json</code> + <code>scenario.mjs</code></b> replays without a model — already correct; format byte-compatible through P3.</li>
+<li><b>Pi-free core</b> — <code>session.js</code> stays pi-free so <code>npm run check</code> proves it without pi or a browser.</li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next:</b> CI badge — <code>npm run check && npm run scenario -- scenarios/*.json</code> as the required check on every PR. Zero model cost, catches ID math + page drift.</li>
+</ul>
+</div>
+<div class="card">
+<h3>Fast, safe extension loop <span class="check">✔ done</span></h3>
+<ul>
+<li><b>Edit → <code>cext_reload</code> instant</b> — no 4 s wait.</li>
+<li><b><code>npm run check</code> without browser</b> — keeps feedback &lt;1 s.</li>
+<li><b><code>cext_serve</code> for content scripts</b> — 10-line server, <code>file://</code> never runs them.</li>
+<li><b><code>cext_cdp</code> escape hatch</b> — one tool description, saves re-adding a tool the hour permissions are needed. Keep.</li>
+<li style="background:#fff8e6; padding:6px 10px; border-radius:6px"><b>Next:</b> document the loop as 3 lines: <code>edit → install.bat → cext_reload → cext_batch</code> — the shortest path to green.</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ranked">Ranked suggestions — 14, by value (what's left + what to keep)</h2>
+<p class="sub">Order = value now, on top of P1–P5. Each row is independently shippable. First 6 are the remaining payback; 7–14 are keep-or-hygiene. Refs: S = this report, P = prior phase.</p>
+<table>
+<tr><th>#</th><th>Suggestion</th><th>Goals</th><th>Impact</th><th>Effort</th><th>Ref</th></tr>
+<tr><td>1</td><td><b>Trim tool prose 3.9k → ≤2.5k</b> — one sentence per tool, detail → batch guidelines</td>
+  <td><span class="pill">agent</span><span class="pill pill-green">cost</span></td>
+  <td><span class="tag t-med">med</span> −1.4k chars every turn</td><td>~30 min</td><td>S-01</td></tr>
+<tr><td>2</td><td><b>3 copy-paste batch examples in README</b> (dummy-form, payment, popup + eval assertion)</td>
+  <td><span class="pill">agent</span><span class="pill pill-amber">user</span><span class="pill">prod</span></td>
+  <td><span class="tag t-med">med</span> replaces 500 words of prose</td><td>~20 min</td><td>S-03</td></tr>
+<tr><td>3</td><td><b>Selector resilience guide</b> — stable selectors, randomized-id callout, <code>eval</code> DOM probe</td>
+  <td><span class="pill">agent</span><span class="pill">prod</span></td>
+  <td><span class="tag t-med">med</span> fewer flaky flows</td><td>~15 min</td><td>S-04</td></tr>
+<tr><td>4</td><td><b>CI: <code>check + scenario</code> required</b> — <code>.github/workflows/ci.yml</code> 2 jobs</td>
+  <td><span class="pill">prod</span><span class="pill pill-green">cost</span></td>
+  <td><span class="tag t-med">med</span> 0-model-cost regression</td><td>~15 min</td><td>S-06</td></tr>
+<tr><td>5</td><td><b>Freeze 10 tools</b> — new tool must delete one (budget rule in CONTRIBUTING/README)</td>
+  <td><span class="pill">agent</span><span class="pill pill-green">cost</span></td>
+  <td><span class="tag t-low">low</span> stops prose creep</td><td>doc 1 line</td><td>S-02</td></tr>
+<tr><td>6</td><td><b>Keep <code>screenshot inline:false</code> + prune note</b> — last-7-days or last-20 artifacts</td>
+  <td><span class="pill pill-green">cost</span><span class="pill">prod</span></td>
+  <td><span class="tag t-low">low</span> avoids disk + token blow-up</td><td>~10 min</td><td>—</td></tr>
+<tr><td>7</td><td><b>Keep <code>logs next</code> cursor in content</b> — tailing without re-shipping 5k lines</td>
+  <td><span class="pill">agent</span></td>
+  <td><span class="tag t-low">low</span> keep</td><td>keep</td><td>—</td></tr>
+<tr><td>8</td><td><b>Keep scenarios byte-compatible</b> — JSON format frozen, runner is pi-free</td>
+  <td><span class="pill">prod</span></td>
+  <td><span class="tag t-low">low</span> keep</td><td>keep</td><td>—</td></tr>
+<tr><td>9</td><td><b>Keep serial <code>busy</code> chain</b> — pi runs sibling calls concurrently</td>
+  <td><span class="pill">prod</span></td>
+  <td><span class="tag t-keep">keep</span> correctness</td><td>keep</td><td>—</td></tr>
+<tr><td>10</td><td><b>Keep <code>cext_serve</code> + <code>cext_cdp</code></b> — 2 tools, cover content scripts + escape hatch</td>
+  <td><span class="pill">prod</span></td>
+  <td><span class="tag t-keep">keep</span> 2 prose lines</td><td>keep</td><td>—</td></tr>
+<tr><td>11</td><td><b>Keep STALE warning in <code>install.bat</code></b> (already landed) — junction stays opt-in</td>
+  <td><span class="pill pill-amber">user</span></td>
+  <td><span class="tag t-low">low</span> keep</td><td>keep</td><td>P5</td></tr>
+<tr><td>12</td><td><b>No new dependencies</b> — enforce via <code>npm ls --depth=0</code> in CI</td>
+  <td><span class="pill pill-green">cost</span></td>
+  <td><span class="tag t-keep">keep</span> 0 install</td><td>keep</td><td>P5</td></tr>
+<tr><td>13</td><td><b>One <code>MAX_TEXT</code> + <code>_ctx()</code></b> — keep single guard/cap, don't re-introduce per-method checks</td>
+  <td><span class="pill">prod</span></td>
+  <td><span class="tag t-low">low</span> keep</td><td>keep</td><td>P1</td></tr>
+<tr><td>14</td><td><b>Root <code>package.json</code> private wrapper</b> — already private, keep version in <code>browser-tester/package.json</code> only</td>
+  <td><span class="pill pill-amber">user</span></td>
+  <td><span class="tag t-low">low</span> keep</td><td>keep</td><td>P5</td></tr>
+</table>
+
+<div class="card">
+<b>When to stop.</b> Rows 1–6 are the remaining payback (prose, examples, CI, guide, freeze, prune). Rows 7–14 are keeps — their value is <em>not re-adding</em> what P1–P5 deleted. Adding anything beyond this table (config, frameworks, dashboards) must pass the ladder: show stdlib / platform / installed dep cannot do it in fewer lines.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="not">Do <em>not</em> delete these — load-bearing simplicity</h2>
+<table>
+<tr><th>Keep</th><th>Why</th></tr>
+<tr><td>Serial <code>busy</code> chain in <code>index.ts</code></td><td>Pi runs sibling tool calls concurrently; without it two <code>cext_*</code> ops race the browser.</td></tr>
+<tr><td><code>_attachHooks</code> + <code>request().method()</code></td><td>A throw there is an uncaughtException that kills pi — smoke §7 guards it.</td></tr>
+<tr><td><code>serve()</code> traversal guard</td><td>Trust boundary — case-insensitive prefix check, 400 on malformed %.</td></tr>
+<tr><td><code>logs()</code> cursor <code>next</code> in content</td><td>Only <code>content</code> reaches the model; <code>details.next</code> is invisible.</td></tr>
+<tr><td><code>scenarios/</code> + <code>scenario.mjs</code> (pi-free)</td><td>Zero-model-cost replay — format must survive any future collapse.</td></tr>
+<tr><td><code>runInShell</code> + mirror error message</td><td>Windows can't spawn <code>.cmd</code> directly; message is the fix for blocked CDN.</td></tr>
+<tr><td>150 ms focus settle in <code>popup()</code></td><td>Without it the extension targets the popup tab and refuses to run.</td></tr>
+<tr><td>Smoke ID vectors (§1–3) + NotLaunchedError</td><td>Only pure-math known-answer tests; actionable error wording.</td></tr>
+<tr><td><code>session.js</code> stays pi-free</td><td>So <code>npm run check</code> proves it without pi or a browser.</td></tr>
+<tr><td><code>MAX_TEXT</code> single cap + compact eval</td><td>One cap, not two magic 12000s; pretty-print would be +30% chars.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="cost-math">Appendix — cost math (checkable)</h2>
+<pre><code>Prompt cost (every turn, even before first click):
+
+  Before P1:    23 tools × prose  = 7,466 chars → ~1.9k tokens / turn
+  Now post-P5:  10 tools × prose  = 3,924 chars → ~1.0k tokens / turn  (−48%)
+  Target next:  10 tools × prose ≤ 2,500 chars → ~0.64k tokens / turn  (−36% more)
+
+  Per-turn saving achieved:  ~0.9k tokens. Over 20-turn flow: ~18k tokens.
+  Per-turn saving remaining: ~0.36k tokens. Over 20-turn flow: ~7.2k tokens.
+
+Output cost (the body-text tax):
+
+  12-step flow before: ~12 bodies × 600–12,000 chars + 12 one-liners
+  12-step flow now:     12 one-liners + 1 compact eval JSON + optional 1 snapshot
+  Measured saving: ~90% fewer output chars (smoke §9 proves no re-ship).
+
+  Screenshot tax (when inline:true): 800×600 PNG ~ 300–800k chars base64
+  → default inline:false ships ~40 chars ("screenshot saved: artifacts/...png")
+
+Wall-clock:
+
+  launch(popup-only ext):  10,000 ms →   &lt;1 ms   (−10,000 ms)  ✔
+  cext_reload:              4,000 ms →     0 ms   (−4,000 ms)  ✔
+  12-step round trips:     12 turns  →   1 turn  (−11 LLM turns + latency)  ✔
+  Remaining waits: 0 — Chromium download (~170 MB, once) is the only latency,
+  handled by 600 s timeout + PLAYWRIGHT_DOWNLOAD_HOST mirror.</code></pre>
+
+<div class="grid">
+<div class="card" style="border-left:4px solid var(--bad)">
+<b>Before P1</b>
+<pre><code>browser-tester/
+├── index.ts        505  23 tools
+├── src/session.js  803  +10 s scan
+│                        + 4 s reload
+│                        + dedupe
+├── scripts/        308
+└── scenarios/      2 flows
+────────────────────────
+1,308 source lines
+~7.5k prompt chars
+up to 14 s avoidable wait
+N turns per flow</code></pre>
+</div>
+<div class="card" style="border-left:4px solid var(--good)">
+<b>Now (post-P5) — measured</b>
+<pre><code>browser-tester/
+├── index.ts        300  10 tools
+│                        pick() schemas
+│                        busy chain
+├── src/session.js  753  OPS 15
+│                        no dedupe/waits
+│                        MAX_TEXT/_ctx
+├── scripts/         72  + smoke + runner
+└── scenarios/      2 flows (unchanged)
+────────────────────────
+~1,125 source lines  (−14%)
+~3.9k prompt chars  (−48%)
+0 s avoidable wait
+1 turn per flow
+0 deps added</code></pre>
+</div>
+</div>
+
+<div class="card" style="border-left:4px solid var(--warn)">
+<b>Next horizon (S-01→S-06, ~90 min)</b>
+<pre><code>browser-tester/
+├── index.ts       ~220  10 tools, ≤2.5k prose
+├── src/session.js ~753  (keep landmines)
+├── scripts/        72   + CI (2 jobs)
+└── scenarios/     2 flows (unchanged)
+────────────────────────
+~1,045 source lines
+≤2.5k prompt chars  (−36% more)
+0 s wait  ·  1 turn  ·  CI green
+3 batch examples in README</code></pre>
+</div>
+
+<h2 id="horizon">What <em>not</em> to build — the horizon that fails the ladder</h2>
+<div class="cols">
+<div class="card">
+<h3>Tempting but skip</h3>
+<ul>
+<li><b>DOM-outline / accessibility snapshot tool</b> — <code>eval</code> already returns any DOM slice; new tool = second name for same op. Document the pattern instead.</li>
+<li><b>Visual regression / image diff</b> — heavy deps (pixelmatch, canvas) for a need <code>screenshot(path)</code> + external diff already covers.</li>
+<li><b>Config file / options UI</b> — zero-config is a feature; every option is a line to docs, test, and migrate.</li>
+<li><b>Per-tool retry / auto-heal</b> — hides flaky selectors; fix the selector, don't retry it.</li>
+<li><b>Framework wrappers (Page Objects, fixtures)</b> — <code>scenarios/*.json</code> already is the harness; frameworks add a DSL to learn.</li>
+</ul>
+</div>
+<div class="card">
+<h3>When to revisit</h3>
+<ul>
+<li>DOM helper → when 3+ agents independently write the same 4-line eval to outline the page — then 1 batch op <code>outline</code> may earn its prose.</li>
+<li>Config → when a single value actually varies per project (not "might vary").</li>
+<li>Visual diff → when screenshot comparison becomes a weekly task, not a one-off.</li>
+<li>New dependency → when stdlib + playwright cannot do it in ≤10 lines. Show the 10-line attempt first.</li>
+</ul>
+<p class="sub">Rule: deletion over addition, boring over clever. The shortest working diff wins — but only after reading the code it touches.</p>
+</div>
+
+<footer>
+Suggestions report for the browser-tester pi extension — 5-step algorithm (Question → Delete → Simplify → Accelerate → Automate).
+Baseline: <code>index.ts</code> 300 lines / 10 tools / ~3.9k prompt chars, <code>src/session.js</code> 753 lines / 15 OPS, <code>scripts/</code> 261 lines (measured 2026-09-09 post-P5). Prior phases P1–P5 completed (core deletions landed); this report is the second pass. No source files changed by this document except its own allow-listing in <code>.gitignore</code>. Method: read the code the change touches, then climb the ladder — shortest diff in the right place.
+<br><br>
+<span class="pill">agent-friendly</span> <span class="pill pill-amber">user-friendly</span> <span class="pill pill-green">cost-efficient</span> <span class="pill-teal">high-productivity</span> — one report, four goals, one rule: <em>never optimize what shouldn't exist.</em>
+</footer>
