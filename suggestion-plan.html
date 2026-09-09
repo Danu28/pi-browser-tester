@@ -1,0 +1,313 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>browser-tester — Suggestions Implementation Plan (suggestion-plan.html)</title>
+<style>
+  :root{--ink:#14181d;--mute:#5b6672;--line:#e2e6ea;--bg:#fbfcfd;--card:#fff;--hi:#0b5fff;--warn:#b26b00;--bad:#b3261e;--good:#0a7d3f;--accent:#6b4eff;--teal:#0e7a6b}
+  *{box-sizing:border-box}
+  body{margin:0 auto;max-width:1040px;padding:40px 28px 80px;background:var(--bg);color:var(--ink);font:14.5px/1.6 system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  h1{font-size:26px;margin:0 0 4px;line-height:1.2}
+  h2{font-size:19px;margin:40px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--ink)}
+  h3{font-size:15px;margin:18px 0 8px}
+  h4{font-size:13px;margin:14px 0 6px;color:var(--mute);text-transform:uppercase;letter-spacing:.04em}
+  p,li{margin:7px 0}
+  code{font:12.5px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#f1f3f5;padding:1px 4px;border-radius:3px}
+  pre{background:#12171d;color:#e6edf3;padding:12px 14px;border-radius:8px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace}
+  pre code{background:none;color:inherit;padding:0}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:#f1f3f5;font-weight:600}
+  .sub{color:var(--mute)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:14px 0}
+  .tag{display:inline-block;font:10px/1.6 system-ui;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:99px;border:1px solid currentColor;vertical-align:middle}
+  .t-high{color:var(--bad)}.t-med{color:var(--warn)}.t-low{color:var(--good)}.t-keep{color:var(--hi)}.t-cost{color:var(--accent)}
+  .kpi{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+  .kpi div{flex:1 1 132px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center}
+  .kpi b{display:block;font-size:20px;line-height:1.2}
+  .kpi span{color:var(--mute);font-size:11px;display:block;margin-top:2px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.cols,.grid{grid-template-columns:1fr}}
+  .pill{display:inline-block;font:11px/1.5 system-ui;font-weight:600;background:#eef2ff;color:#3b3bff;border-radius:99px;padding:2px 8px;margin:2px 4px 2px 0}
+  .pill-green{background:#e6f4ea;color:var(--good)}.pill-amber{background:#fff4e0;color:var(--warn)}.pill-red{background:#fdecea;color:var(--bad)}.pill-teal{background:#e0f5f1;color:var(--teal)}
+  .step-num{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;font-weight:700;font-size:12px;margin-right:7px}
+  .phase{border-left:4px solid var(--ink)}
+  .phase.p0{border-left-color:#888}.phase.p1{border-left-color:var(--bad)}.phase.p2{border-left-color:var(--hi)}.phase.p3{border-left-color:var(--accent)}.phase.p4{border-left-color:var(--good)}.phase.p5{border-left-color:var(--warn)}
+  .toc a{color:var(--hi);text-decoration:none}.toc a:hover{text-decoration:underline}
+  .check{color:var(--good)} .cross{color:var(--bad)}
+  .mono{font:12px ui-monospace}
+  .right{float:right}
+  footer{margin-top:44px;color:var(--mute);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
+  ul{padding-left:20px}
+  .badge{display:inline-block;font:11px/1.4 system-ui;font-weight:700;padding:2px 8px;border-radius:99px;margin-left:8px;vertical-align:middle}
+  .badge.done{background:#e6f4ea;color:var(--good)}.badge.next{background:#fff4e0;color:var(--warn)}
+</style>
+
+<h1>Suggestions Implementation Plan</h1>
+<p class="sub">How to land <a href="suggestion.html">suggestion.html</a> (14 ranked suggestions, 4 goals) without breaking the extension — sequenced phases, file map, effort, proofs and rollback · companion to <a href="suggestion.html">suggestion.html</a> · baseline: <b>post-P5 (2026-09-09)</b> · status: <b>ready to execute</b></p>
+
+<div class="kpi">
+  <div><b>4</b><span>phases (P0 baseline + P1–P3)</span></div>
+  <div><b>~90 min</b><span>total hands-on<br>(longest phase 30 min)</span></div>
+  <div><b>1</b><span>PR per phase<br>— each green &amp; revertible</span></div>
+  <div><b>3.9k → 2.5k</b><span>prompt chars<br>(only remaining cut)</span></div>
+  <div><b>0</b><span>new tools / deps</span></div>
+  <div><b>0 s</b><span>waits to delete<br>(already 0)</span></div>
+</div>
+
+<div class="card">
+<b>One paragraph.</b> <a href="suggestion.html">suggestion.html</a> is the <em>what/why</em> — this file is the <em>when/how/who</em>. P1–P5 already landed the heavy deletions (13 tools, 2 waits, dedupe). This second-pass plan turns the remaining 14 suggestions (S-01…S-14) into a 90-minute finish: <b>trim the last 1.4k prompt chars</b> (P1), <b>teach by example</b> (P2), <b>wire zero-cost replay into CI</b> (P3) — plus a keep-list so the next contributor doesn't re-add what was deleted. Every phase ships alone; stop after any green phase and the repo is still better than before.
+</div>
+
+<div class="card toc">
+<b>Contents</b> —
+<a href="#map">Traceability map</a> ·
+<a href="#gantt">Timeline &amp; dependencies</a> ·
+<a href="#phases">Phases P0–P3</a> ·
+<a href="#touches">File-touch map</a> ·
+<a href="#risks">Risks &amp; mitigations</a> ·
+<a href="#accept">Acceptance</a> ·
+<a href="#effort">Effort rollup</a>
+</div>
+
+<!-- TRACEABILITY -->
+<h2 id="map">1. Traceability — every suggestion → a phase</h2>
+<p class="sub">IDs from <a href="suggestion.html">suggestion.html</a> ranked list (second pass). No suggestion left floating. <span class="pill pill-green">cost</span> <span class="pill">agent</span> <span class="pill pill-amber">user</span> <span class="pill">prod</span></p>
+<table>
+<tr><th>#</th><th>Suggestion (condensed)</th><th>Goals</th><th>Phase</th><th>Why there</th></tr>
+<tr><td>1</td><td><b>Trim tool prose 3.9k → ≤2.5k</b> — one sentence per tool, detail → batch guidelines</td><td><span class="pill">agent</span><span class="pill pill-green">cost</span></td><td><b>P1</b></td><td>Only file touched is <code>index.ts</code> — smallest blast radius, largest token win; freeze must land with it</td></tr>
+<tr><td>5</td><td><b>Freeze 10 tools</b> — new tool must delete one (budget rule)</td><td><span class="pill">agent</span><span class="pill pill-green">cost</span></td><td><b>P1</b></td><td>One-line doc guard next to the trim — review together</td></tr>
+<tr><td>2</td><td><b>3 copy-paste batch examples in README</b> (dummy-form, payment, popup + eval assertion)</td><td><span class="pill">agent</span><span class="pill pill-amber">user</span><span class="pill">prod</span></td><td><b>P2</b></td><td rowspan="3">Docs-only; no dependency on prose trim but reads better after P1 — safe to run in parallel with P1</td></tr>
+<tr><td>3</td><td><b>Selector resilience guide</b> — stable selectors, randomized-id callout, eval DOM probe</td><td><span class="pill">agent</span><span class="pill">prod</span></td><td><b>P2</b></td></tr>
+<tr><td>6</td><td><b>Keep screenshot inline:false + prune note</b> — last-7-days / last-20 artifacts</td><td><span class="pill pill-green">cost</span><span class="pill">prod</span></td><td><b>P2</b></td></tr>
+<tr><td>4</td><td><b>CI: <code>check + scenario</code> required</b> — <code>.github/workflows/ci.yml</code></td><td><span class="pill">prod</span><span class="pill pill-green">cost</span></td><td><b>P3</b></td><td rowspan="9">Automation last — only after prose/docs are stable; keeps CI diff isolated from doc churn. Keeps 7–14 are zero-effort confirms in same P3 review.</td></tr>
+<tr><td>12</td><td><b>No new dependencies</b> — enforce via <code>npm ls</code> in CI</td><td><span class="pill pill-green">cost</span></td><td><b>P3</b></td></tr>
+<tr><td>7</td><td>Keep <code>logs next</code> cursor in content</td><td><span class="pill">agent</span></td><td><b>P3</b></td></tr>
+<tr><td>8</td><td>Keep scenarios byte-compatible</td><td><span class="pill">prod</span></td><td><b>P3</b></td></tr>
+<tr><td>9</td><td>Keep serial <code>busy</code> chain</td><td><span class="pill">prod</span></td><td><b>P3</b></td></tr>
+<tr><td>10</td><td>Keep <code>cext_serve</code> + <code>cext_cdp</code></td><td><span class="pill">prod</span></td><td><b>P3</b></td></tr>
+<tr><td>11</td><td>Keep STALE warning in <code>install.bat</code></td><td><span class="pill pill-amber">user</span></td><td><b>P3</b></td></tr>
+<tr><td>13</td><td>One <code>MAX_TEXT</code> + <code>_ctx()</code></td><td><span class="pill">prod</span></td><td><b>P3</b></td></tr>
+<tr><td>14</td><td>Root <code>package.json</code> private wrapper</td><td><span class="pill pill-amber">user</span></td><td><b>P3</b></td></tr>
+</table>
+<p class="sub">Effect: suggestions 7–14 are <em>keeps</em> — they cost a reviewer check, not a migration; the plan records them so they aren't re-debated after landing. Only #1–4 + #12 require edits.</p>
+
+<!-- GANTT -->
+<h2 id="gantt">2. Timeline &amp; dependencies</h2>
+<pre><code>P0  Baseline ───────────────────────────────────────────────────────  15 min   (no code)
+ │
+ ├──▶ P1  Prose trim + freeze  ─────────────────────────────────────  30 min ──┐
+ │       S-01 S-05 · index.ts + README budget line                             │
+ │                                                                             │
+ └──▶ P2  Teach by example  ────────────────────────────────────────  30 min ──┤ P1 &amp; P2 are
+         S-02 S-03 S-06 · README.md                                            │ independent;
+              │                                                                │ docs-only,
+              │                                                                │ parallelizable
+              ▼                                                                │
+     P3  CI + keeps  ────────────────────────────────────────────────  15 min ◀─┘  P3 after
+         S-04 S-12 + confirms S-07..S-14 · .github/workflows/ci.yml            │  P1/P2 (isolated CI diff)
+                                                                                │
+     Total hands-on if linear: ~90 min. With P1∥P2: ~60 min.                    │
+     Each arrow is a hard dependency; absence = safe to parallelise.          ──┘</code></pre>
+<div class="card">
+<b>Why this order is cheapest.</b> P0 measures so P1 can claim a delta honestly. P1 (index.ts prose) and P2 (README) touch disjoint regions — run in parallel with two reviewers, or P1 then P2 with one. P3 is automation and must be last: wiring CI before docs stabilise means the CI diff churns. P1–P5 lineage (waits, dedupe, vocabulary) already landed — this plan never re-touches <code>session.js</code>.
+</div>
+
+<!-- PHASES -->
+<h2 id="phases">3. Phases — what to do, in order</h2>
+
+<!-- P0 -->
+<div class="card phase p0">
+<h3><span class="step-num">P0</span> Baseline — measure before you cut <span class="tag t-low">no code</span> <span class="right mono">15 min · owner: anyone</span></h3>
+<p><b>Objective.</b> Freeze numbers so every later phase can claim a delta honestly. No files changed.</p>
+<table>
+<tr><th>Task</th><th>Command / artefact</th></tr>
+<tr><td>Count tools, prose chars, lines</td><td><code>rg -c "name: \"cext_" browser-tester/index.ts</code> → expect 10<br><code>wc -l browser-tester/index.ts browser-tester/src/session.js</code> → 300 / 753<br><code>node -e "let s=require('fs').readFileSync('browser-tester/index.ts','utf8'); let m=s.match(/description:\s*\"[^\"]+\"/g)||[]; let n=s.match(/promptSnippet:\s*\"[^\"]+\"/g)||[]; console.log([...m,...n].join('').length)"</code> → ~3,924</td></tr>
+<tr><td>Prove green baseline</td><td><code>npm run check</code> (smoke §1–11) — must be green</td></tr>
+<tr><td>Run scenarios once</td><td><code>npm run scenario -- browser-tester/scenarios/dummy-form.json</code> (both if present) — exit 0</td></tr>
+<tr><td>Record in tracking issue</td><td>Before: 3,924 chars / 10 tools / 753 lines / 0 waits</td></tr>
+</table>
+<p><b>Exit.</b> Numbers written; <code>npm run check</code> green. <b>Rollback:</b> n/a.</p>
+</div>
+
+<!-- P1 -->
+<div class="card phase p1">
+<h3><span class="step-num">P1</span> Prose trim + freeze — 3.9k → ≤2.5k <span class="tag t-high">largest remaining token win</span> <span class="right mono">~30 min · owner: index.ts owner</span></h3>
+<p><b>Suggestions:</b> S-01 (trim) + S-05 (freeze 10-tool budget) · <b>Touched:</b> <code>browser-tester/index.ts</code> (descriptions/snippets) + <code>README.md</code> (1 line budget rule) · <b>Depends on:</b> P0</p>
+<h4>Tasks</h4>
+<ul>
+<li>In <code>browser-tester/index.ts</code> — shorten each surviving tool's <code>description</code> to one crisp sentence (remove "also …", repeated examples). Move any teaching into <code>cext_batch.promptGuidelines</code> only — that is the one place the agent reads when choosing an op. Keep labels + snippet nouns; delete filler adjectives.</li>
+<li>Keep <code>promptGuidelines</code> on <code>cext_batch</code> intact (they already say: "…are steps in it, not tools of their own" / "End with eval assertion" / "snapshot:true for body" / "stopOnError"). Shorten by ≤20%, don't delete.</li>
+<li>Verify <code>pick([...])</code> still derives <code>cext_screenshot</code>/<code>cext_logs</code> from <code>batchStep</code> — no duplicated field prose reintroduced.</li>
+<li>In <code>README.md</code> — add one budget line near Tools table: <code>Budget: 10 tools — new tool must delete one.</code> (enforces S-05 without code).</li>
+<li>No logic changed — only string literals.</li>
+</ul>
+<h4>Proof</h4>
+<table>
+<tr><th>Check</th><th>Must be</th></tr>
+<tr><td><code>node -e "let s=require('fs').readFileSync('browser-tester/index.ts','utf8'); let m=s.match(/description:\s*\"[^\"]+\"/g)||[]; let n=s.match(/promptSnippet:\s*\"[^\"]+\"/g)||[]; console.log([...m,...n].join('').length)"</code></td><td><b>≤2,500</b> (from ~3,924)</td></tr>
+<tr><td><code>rg -c "name: \"cext_" browser-tester/index.ts</code></td><td>10</td></tr>
+<tr><td><code>npm run check</code></td><td>green — descriptions never affect logic</td></tr>
+<tr><td>Manual: one <code>cext_batch</code> flow driven after trim</td><td>no behaviour change; error messages still list OPS on unknown op</td></tr>
+</table>
+<p><b>Risks:</b> Over-trimming could make a tool ambiguous. Mitigation: keep the 4 batch guidelines verbose; examples in README (P2) compensate for shorter descriptions. <b>Rollback:</b> revert one commit — strings only, no logic.</p>
+</div>
+
+<!-- P2 -->
+<div class="card phase p2">
+<h3><span class="step-num">P2</span> Teach by example — batch patterns + selector guide <span class="tag t-med">docs-only</span> <span class="right mono">~30 min · owner: docs/README owner</span></h3>
+<p><b>Suggestions:</b> S-02 (3 examples) + S-03 (selector resilience) + S-06 (prune note) · <b>Touched:</b> <code>README.md</code> only · <b>Depends on:</b> — (independent of P1; reads better after P1)</p>
+<h4>Tasks</h4>
+<ul>
+<li><b>Above Tools table</b> — add 3 copy-paste batch flows (each ~6 lines JSON) that previously lived only in prose: <br>(a) <code>dummy-form</code> fill + eval assertion (randomized-id workaround via <code>[type='email']</code>); <br>(b) <code>payment</code> form submit + reload check; <br>(c) <code>popup</code> test: <code>cext_launch(ext)</code> → <code>cext_serve</code> → <code>open</code> → <code>cext_popup</code> → <code>cext_batch</code> with eval reading <code>chrome.*</code>.</li>
+<li>Each example ends with the <code>eval</code>-as-assertion pattern: <code>{op:"eval", expression:"(async ()=&gt;{ /* read 5 values, throw if wrong */ })()"}</code> — thrown error = failed step with index.</li>
+<li><b>Selector guide</b> — one short subsection (5 bullets): stable selectors (<code>[type]</code>, <code>[name]</code>, text) over <code>#shub39</code>; use <code>eval("document.querySelectorAll('*').length")</code> to probe; <code>wait</code> with <code>text</code> for async renders; <code>scroll</code> before below-fold clicks; <code>history</code> for back-nav.</li>
+<li><b>Prune note</b> — under Troubleshooting or near artifacts mention: <code>artifacts/</code> grows unbounded in CI — keep last 20 or last 7 days: <code>find artifacts -type f -mtime +7 -delete</code> (or CI retention).</li>
+<li>Also place the 3-line loop summary: <code>edit → install.bat → cext_reload → cext_batch</code>.</li>
+</ul>
+<h4>Proof</h4>
+<table>
+<tr><th>Check</th><th>Must be</th></tr>
+<tr><td><code>grep -c "op.*eval" README.md</code></td><td>≥3 (each example ends with eval assertion)</td></tr>
+<tr><td><code>grep -c "shub" README.md</code></td><td>≥1 (randomized-id callout present)</td></tr>
+<tr><td>Copy-paste test: each example JSON validates</td><td><code>node -e "JSON.parse(require('fs').readFileSync('README.md','utf8').match(/\{[^]*?\"steps\"[^]*?\]/g)[0]+'}}')"</code> or manual batch run of one example</td></tr>
+<tr><td><code>npm run check</code></td><td>green (README never affects smoke)</td></tr>
+</table>
+<p><b>Risks:</b> Examples rot when selectors drift (same as scenarios). Mitigation: examples use stable selectors; scenarios already assert the real flow — examples are teaching, not truth. <b>Rollback:</b> revert README commit.</p>
+</div>
+
+<!-- P3 -->
+<div class="card phase p3">
+<h3><span class="step-num">P3</span> CI + keeps — zero-cost replay on every PR <span class="tag t-med">automation</span> <span class="right mono">~15 min · owner: repo maintainer</span></h3>
+<p><b>Suggestions:</b> S-04 (CI) + S-12 (no new deps) + confirms S-07…S-14 keeps · <b>Touched:</b> <code>.github/workflows/ci.yml</code> (new) · <b>Depends on:</b> after P1/P2 (isolated CI diff)</p>
+<h4>Tasks</h4>
+<ul>
+<li>Create <code>.github/workflows/ci.yml</code> (2 jobs, no matrix needed):<br>
+<pre><code>name: ci
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm run check
+  scenario:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npx playwright install chromium
+      - run: npm run scenario -- browser-tester/scenarios/dummy-form.json
+      # add payment-page.json when stable in CI (network-flaky pages may need retry)</code></pre>
+</li>
+<li>Add <code>npm ls --depth=0</code> guard in <code>check</code> job (or as a separate step) to enforce S-12: fail PR if a new prod dependency appears without review. Expected deps: <code>playwright</code> only.</li>
+<li>CI uses <code>scenario.mjs</code> — pi-free, no model, exit code is the assertion (failed step index). Browser job downloads Chromium (~170 MB) once per run — keep 600 s timeout already in <code>session.js</code>; add mirror env if needed: <code>PLAYWRIGHT_DOWNLOAD_HOST</code>.</li>
+<li>Confirm keeps S-07…S-14 remain untouched — reviewer checks the 9 "Do not delete" rows in suggestion.html still hold. No code change for keeps; CI is the only diff.</li>
+</ul>
+<h4>Proof</h4>
+<table>
+<tr><th>Check</th><th>Must be</th></tr>
+<tr><td>Fresh clone → <code>npm run check</code> locally</td><td>green</td></tr>
+<tr><td>Push branch → GitHub Actions</td><td>both jobs green (check &lt;10 s, scenario ~20–40 s with Chromium)</td></tr>
+<tr><td>PR adding a dependency (test: add <code>lodash</code>)</td><td>CI step <code>npm ls --depth=0</code> fails or reviewer catches it — S-12 enforced</td></tr>
+<tr><td><code>rg "_scanExtId|_extensionAlive|changedLinesOnly|_lastBody|dedupe" browser-tester/src/session.js</code></td><td>0 hits (keeps still deleted)</td></tr>
+</table>
+<p><b>Risks:</b> Scenario flakiness on external pages (<code>selectorshub.com</code>) in CI. Mitigation: retry once; if still flaky, keep <code>npm run check</code> as required and make scenario <code>continue-on-error</code> with an issue label — never block contributors on external site drift. <b>Rollback:</b> delete <code>.github/workflows/ci.yml</code> — one file.</p>
+</div>
+
+<!-- FILE TOUCH MAP -->
+<h2 id="touches">4. File-touch map — who reviews what</h2>
+<table>
+<tr><th>File</th><th>Phases</th><th>What changes</th><th>Review lens</th></tr>
+<tr><td><code>browser-tester/index.ts</code></td><td>P1</td><td>Shorten <code>description</code>/<code>promptSnippet</code> strings to ≤2.5k total; keep <code>pick()</code>, <code>OPS</code>, <code>busy</code> chain, guidelines</td><td>Prompt cost + agent ergonomics — verify 10 tools, guidelines present, no logic change</td></tr>
+<tr><td><code>README.md</code></td><td>P1 (1 line), P2</td><td>Budget line (P1) + 3 batch examples + selector guide + prune note + 3-line loop</td><td>User can go from clone to green copying an example — no external docs needed</td></tr>
+<tr><td><code>.github/workflows/ci.yml</code></td><td>P3</td><td>New file: <code>check</code> + <code>scenario</code> jobs + <code>npm ls</code> guard</td><td>CI green on main; scenario retry policy sane</td></tr>
+<tr><td><code>.gitignore</code></td><td>pre-P0</td><td>Allow-list <code>!suggestion.html</code> + <code>!suggestion-plan.html</code> (already landed)</td><td>Both HTML docs tracked despite <code>*.html</code> ignore</td></tr>
+<tr><td><code>browser-tester/src/session.js</code></td><td>—</td><td><b>Not touched</b> — P1–P5 already deleted waits/dedupe and unified OPS; keeps (MAX_TEXT/_ctx/busy) stay</td><td>Smoke still proves ID math without browser</td></tr>
+<tr><td><code>browser-tester/scripts/smoke.mjs</code></td><td>—</td><td>Not touched — §1–11 already assert ID vectors + hooks + batch one-liners</td><td>Vectors still pass; no loss of coverage</td></tr>
+<tr><td><code>install.bat</code></td><td>—</td><td>Not touched (STALE warning already landed in P5)</td><td>Manual STALE check still works</td></tr>
+</table>
+<p class="sub">No file is touched by more than one phase (except README 1-line + examples) — review load stays local. <code>session.js</code> deliberately untouched: the rule is never optimize what shouldn't exist, and there's nothing left to delete there.</p>
+
+<!-- RISKS -->
+<h2 id="risks">5. Risks, mitigations and rollback</h2>
+<table>
+<tr><th>Risk</th><th>Phase</th><th>Severity</th><th>Mitigation</th><th>Rollback cost</th></tr>
+<tr><td>Prose trimmed too far — tool ambiguous</td><td>P1</td><td><span class="tag t-med">med</span></td><td>Keep 4 batch guidelines verbose; P2 examples compensate; error still lists valid OPS</td><td>revert commit</td></tr>
+<tr><td>README examples rot when demo site changes</td><td>P2</td><td><span class="tag t-low">low</span></td><td>Use stable selectors; examples are teaching — scenarios are truth; update one example per site drift</td><td>revert one example</td></tr>
+<tr><td>CI scenario flaky on external page</td><td>P3</td><td><span class="tag t-med">med</span></td><td>Retry once; make scenario non-required if flaky; never block on external drift</td><td>delete workflow file</td></tr>
+<tr><td>Prompt creep — new tool added without deleting one</td><td>any</td><td><span class="tag t-low">low</span></td><td>Budget line in README + reviewer checklist; <code>rg -c 'name: "cext_'</code> in CI could enforce 10</td><td>revert tool addition</td></tr>
+<tr><td>Artifacts fill CI disk</td><td>P2/P3</td><td><span class="tag t-low">low</span></td><td>Prune note + CI <code>find artifacts -mtime +7 -delete</code> or action retention policy</td><td>n/a</td></tr>
+<tr><td>Over-automation (ID scan, diff, prose sync)</td><td>—</td><td><span class="tag t-keep">keep</span></td><td>These are deleted features — do not automate them; keeps table in suggestion.html guards this</td><td>n/a</td></tr>
+</table>
+<div class="card">
+<b>Load-bearing keeps — never delete (reviewer must confirm in P3).</b> Serial <code>busy</code> chain · <code>_attachHooks</code> + <code>request().method()</code> · <code>serve()</code> traversal guard · <code>logs next</code> in content · <code>scenarios/</code> + <code>scenario.mjs</code> (pi-free) · <code>runInShell</code> + mirror message · 150 ms popup focus settle · smoke ID vectors (§1–3) · <code>MAX_TEXT</code> + <code>_ctx()</code> · <code>session.js</code> pi-free. Each is one line of insurance against a paid-for bug.
+</div>
+
+<!-- ACCEPTANCE -->
+<h2 id="accept">6. Acceptance — done means all of these are true</h2>
+<div class="cols">
+<div class="card">
+<h3>Hard gates (fail = not done)</h3>
+<ul>
+<li><code>rg -c "name: \"cext_" browser-tester/index.ts</code> = <b>10</b> (from 23)</li>
+<li>Tool prose ≤ <b>2.5k chars</b> (from 3,924; script: sum descriptions+snippets)</li>
+<li>15 OPS in exported <code>OPS</code> used by schema <em>and</em> error message (<code>oneOf(OPS)</code> + <code>have ${OPS.join("/")}</code>)</li>
+<li><code>npm run check</code> green · <code>npm run scenario -- scenarios/dummy-form.json</code> exit 0 (or CI green)</li>
+<li>README has 3 batch examples (each ends with <code>eval</code>) + selector guide + prune note + budget line</li>
+<li>No new dependencies; <code>scenarios/*.json</code> replay untouched; <code>session.js</code> untouched</li>
+<li>CI has <code>check</code> + <code>scenario</code> jobs; <code>.gitignore</code> tracks both HTML docs</li>
+</ul>
+</div>
+<div class="card">
+<h3>Soft gates (reviewer confirms)</h3>
+<ul>
+<li><code>npm run check</code> proves ID math without a browser; repo still pi-free where it claims</li>
+<li>README examples are copy-paste and run (one manual <code>cext_batch</code> each)</li>
+<li>CI scenario job retries once on external-site flake, not hard-failing main</li>
+<li>Each phase PR carries its before/after numbers (LOC, tool count, prose chars)</li>
+<li>No unrequested abstraction added — string trims + docs + workflow, no factories/configs</li>
+</ul>
+</div>
+</div>
+
+<!-- EFFORT -->
+<h2 id="effort">7. Effort rollup &amp; why this order is cheapest</h2>
+<table>
+<tr><th>Phase</th><th>Hands-on</th><th>Review</th><th>Why this cheap</th><th>Cumulative</th></tr>
+<tr><td>P0 baseline</td><td>15 min</td><td>—</td><td>Measure only, no code</td><td>15 min</td></tr>
+<tr><td>P1 prose trim + freeze</td><td>30 min</td><td>10 min</td><td>Strings only, one file</td><td>45 min</td></tr>
+<tr><td>P2 examples + guide</td><td>30 min</td><td>10 min</td><td>README only, copy-paste flows</td><td>1 h 15</td></tr>
+<tr><td>P3 CI + keeps</td><td>15 min</td><td>10 min</td><td>One workflow file + confirm keeps</td><td>1 h 30</td></tr>
+</table>
+<p><b>Why this order is the Never-optimize-what-shouldn't-exist order:</b> P0 measures; P1 deletes words that shouldn't exist (long prose); P2 replaces words with examples that teach better in less space; P3 automates only the flows that survived deletion (check + scenario). Reordering P3 before P2 would mean automating flows before the examples that define them — i.e. wiring CI before contributors know the batch-first pattern.</p>
+
+<div class="card">
+<b>Resourcing.</b> One engineer lands P0→P3 in a single afternoon. With two reviewers, run P1∥P2 to shave ~30 min. No design work remains — <a href="suggestion.html">suggestion.html</a> is the spec, this file is the schedule. Stop after any green phase; the next phase only adds, never requires a revert.
+</div>
+
+<h2>8. How to run each phase (copy-paste)</h2>
+<pre><code># every phase, before and after:
+npm run check
+# P0: measure
+rg -c 'name: "cext_' browser-tester/index.ts   # expect 10
+wc -l browser-tester/index.ts browser-tester/src/session.js
+node -e "let s=require('fs').readFileSync('browser-tester/index.ts','utf8'); let m=s.match(/description:\s*\"[^\"]+\"/g)||[]; let n=s.match(/promptSnippet:\s*\"[^\"]+\"/g)||[]; console.log([...m,...n].join('').length)" # expect ~3924 before P1, ≤2500 after
+# P1: after trim, same prose script → ≤2500; rg -c still 10
+# P2: grep examples
+grep -c "op.*eval" README.md          # expect ≥3
+grep -c "shub\|randomized" README.md  # expect ≥1 (selector guide)
+# P3: CI
+cat .github/workflows/ci.yml          # check + scenario jobs present
+# scenarios (manual, once):
+npm run scenario -- browser-tester/scenarios/dummy-form.json
+# full gate:
+npm run check && echo "gate green"
+</code></pre>
+
+<footer>
+Implementation plan for the browser-tester pi extension — turns <a href="suggestion.html">suggestion.html</a>'s 14 suggestions (S-01…S-14, second pass) into 4 shippable phases. Baseline 2026-09-09 post-P5: <code>index.ts</code> 300 lines / 10 tools / ~3.9k prompt chars, <code>src/session.js</code> 753 lines / 15 OPS, <code>scripts/</code> 261 lines. Prior phases P1–P5 already landed (23→10 tools, waits→0, dedupe deleted). No source files changed by this document. Principle: Question → Delete → Simplify → Accelerate → Automate.
+</footer>
