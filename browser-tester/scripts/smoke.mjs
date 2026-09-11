@@ -2,10 +2,10 @@
 // src/session.js is playwright-only, so this proves the pure logic without pi
 // or a browser. Run via: npm run check
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { ChromeExtSession, NotLaunchedError, launchArgs } from "../src/session.js";
 
 const s = new ChromeExtSession();
@@ -187,4 +187,85 @@ s6.activePage = { ...fakePage, evaluate: async () => ({ a: 1, b: [2] }) };
 s6.context = { pages: () => [s6.activePage] };
 assert.equal((await s6.eval("x")).result, '{"a":1,"b":[2]}', "eval must not pretty-print");
 
-console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload relaunch + batch one-liners + screenshot inline + compact eval");
+// 12. truncation marker (T1): eval >12k must mark truncated
+const sTrunc = new ChromeExtSession();
+sTrunc.activePage = { ...fakePage, evaluate: async () => "a".repeat(13000) };
+sTrunc.context = { pages: () => [sTrunc.activePage] };
+const long = await sTrunc.eval("long");
+assert.equal(long.truncated, true, "long eval must be truncated");
+assert.match(long.result, /\[truncated 13002→12000\]/);
+assert.equal(long.result.length <= 12000, true);
+// snapshot truncation
+const sSnap = new ChromeExtSession();
+const bigBody = "b".repeat(15000);
+sSnap.activePage = { ...fakePage, evaluate: async () => bigBody, url: () => "http://x", title: async () => "T" };
+sSnap.context = { pages: () => [sSnap.activePage] };
+const snap = await sSnap.snapshot();
+assert.equal(snap.truncated, true);
+assert.match(snap.bodyText, /\[truncated/);
+
+// 13. extract (T2): pruned aria + selectors
+const sExt = new ChromeExtSession();
+const fakeExtPage = {
+  url: () => "http://x", title: async () => "", isClosed: () => false,
+  evaluate: async (fn, args) => {
+    if (typeof fn === "string") return { a:1 };
+    // emulate extract evaluate returning map
+    return { email: "tester@example.com", _aria: "button 'Pay'" };
+  }
+};
+sExt.context = { pages: () => [fakeExtPage] };
+sExt.activePage = fakeExtPage;
+const ext = await sExt.extract({ selectors: { email: ".e" }, aria: true });
+assert.match(ext.text, /tester@example.com/);
+assert.equal(ext.truncated, false);
+assert.ok(ext.hash);
+
+// 14. fillForm + assert chunking (T5)
+const sChunk = new ChromeExtSession();
+const cf = [];
+sChunk.context = { pages: () => [fakePage], newPage: async () => fakePage };
+sChunk.activePage = fakePage;
+sChunk.fill = async (sel, v) => { cf.push([sel,v]); return { ok:true }; };
+const ff = await sChunk.fillForm({ "#a":"v1", "#b":"v2" });
+assert.equal(ff.count, 2);
+assert.deepEqual(ff.keys, ["#a","#b"]);
+assert.equal(cf.length, 2);
+// batch-level fillForm via batch
+const bat2 = await sChunk.batch([{ op: "fillForm", fields: { "#a":"x", "#b":"y" } }]);
+assert.match(bat2.results[0].result, /filled 2/);
+
+// 15. telemetry per step + diff cache (T6)
+const sTel = new ChromeExtSession();
+sTel.context = { pages: () => [fakePage], newPage: async () => fakePage };
+sTel.activePage = fakePage;
+sTel.click = async () => ({ ok:true });
+const tb = await sTel.batch([{ op: "click", selector: "#x" }, { op: "eval", expression: "1" }]);
+assert.equal(typeof tb.results[0].ms, "number");
+assert.equal(typeof tb.results[0].chars, "number");
+assert.ok(tb.telemetry && typeof tb.telemetry.totalMs === "number");
+assert.equal(tb.telemetry.steps, 2);
+
+// 16. screenshot guard (T11): selector+fullPage must error
+const sShot = new ChromeExtSession();
+sShot.context = { pages: () => [fakePage] };
+sShot.activePage = { ...fakePage, screenshot: async () => Buffer.from("png") };
+sShot.artifactsDir = tmpdir();
+await assert.rejects(() => sShot.screenshot({ selector: "#a", fullPage: true }), /either selector or fullPage/);
+
+// 17. download dedupe + MIME completeness (T7/T11)
+const sDl = new ChromeExtSession();
+assert.match(sDl._uniqueArtifactPath(tmpdir(), "a.pdf"), /a\.pdf$/);
+// MIME check
+const { MIME } = await import("../src/session.js");
+// MIME is not exported, check via serve internal: we verify via import of session file's MIME by reading file
+const mimeRaw = readFileSync(resolve("browser-tester/src/session.js"), "utf8");
+assert.match(mimeRaw, /\.woff2/);
+assert.match(mimeRaw, /\.webp/);
+assert.match(mimeRaw, /\.mp4/);
+
+// 18. OPS expansion: all new ops must be in OPS list
+const { OPS } = await import("../src/session.js");
+for (const op of ["extract","fillForm","assert","upload","drag","emulate"]) assert.ok(OPS.includes(op), `OPS must include ${op}`);
+
+console.log("smoke ok: id derivation + serve() guard + not-launched errors + launch args + network hooks + reload relaunch + batch one-liners + screenshot inline + compact eval + truncation + extract + fillForm + telemetry + screenshot guard + MIME + OPS");

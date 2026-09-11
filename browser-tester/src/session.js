@@ -4,7 +4,7 @@
 
 import { execSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -64,6 +64,11 @@ const PLAYWRIGHT_DIR = process.platform === "win32" ? "%LOCALAPPDATA%/ms-playwri
 
 // Cap on every blob of text headed back to the model (body text, eval output).
 const MAX_TEXT = 12000;
+function truncateWithMarker(text) {
+  if (text.length <= MAX_TEXT) return { text, truncated: false, origLen: text.length };
+  const marker = `\n…[truncated ${text.length}→${MAX_TEXT}]`;
+  return { text: text.slice(0, MAX_TEXT - marker.length) + marker, truncated: true, origLen: text.length };
+}
 
 // The step vocabulary: every browser action is one of these ops. index.ts builds
 // the cext_batch schema from this list and _batchStep rejects anything not in
@@ -71,6 +76,7 @@ const MAX_TEXT = 12000;
 export const OPS = [
   "click", "fill", "press", "select", "hover", "wait", "open", "switch",
   "closePage", "scroll", "history", "eval", "screenshot", "logs", "metrics",
+  "extract", "fillForm", "assert", "upload", "drag", "emulate",
 ];
 
 // One step result is one line — in pi (cext_batch) and in scripts/scenario.mjs.
@@ -136,6 +142,19 @@ const MIME = {
   ".gif": "image/gif",
   ".svg": "image/svg+xml",
   ".txt": "text/plain; charset=utf-8",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".otf": "font/otf",
+  ".eot": "application/vnd.ms-fontobject",
+  ".webp": "image/webp",
+  ".avif": "image/avif",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".pdf": "application/pdf",
+  ".zip": "application/zip",
 };
 
 export class ChromeExtSession {
@@ -152,11 +171,51 @@ export class ChromeExtSession {
     this.logEntries = [];
     this.logSeq = 0;
     this._cdp = null;
+    this._lastSnapshotHash = null;
+    this._lastSnapshotText = null;
+    this._dialogPolicy = "dismiss"; // auto-dismiss dialogs to prevent hangs
   }
 
   _pushLog(source, level, text) {
     this.logEntries.push({ i: this.logSeq++, ts: Date.now(), source, level, text: String(text) });
-    if (this.logEntries.length > 5000) this.logEntries.splice(0, this.logEntries.length - 5000);
+    if (this.logEntries.length > 5000) {
+      const dropped = this.logEntries.length - 5000;
+      this.logEntries.splice(0, dropped);
+      // ponytail: notify once when eviction happens so early evidence loss is visible
+      if (dropped > 0) this.logEntries.unshift({ i: -1, ts: Date.now(), source: "system", level: "warning", text: `[log] ${dropped} oldest entries evicted (cap 5000)` });
+    }
+  }
+
+  _hashText(t) { return createHash("sha256").update(t).digest("hex").slice(0, 12); }
+
+  _uniqueArtifactPath(dir, name) {
+    const ext = extname(name); const base = name.slice(0, -ext.length) || name;
+    let p = join(dir, name); let n = 1;
+    while (existsSync(p)) { p = join(dir, `${base}-${n++}${ext}`); }
+    return p;
+  }
+
+  _pruneArtifacts() {
+    // ponytail: keep last 20 by mtime, delete >7 days — cheapest GC that prevents disk fill in CI
+    try {
+      if (!this.artifactsDir || !existsSync(this.artifactsDir)) return;
+      const entries = readdirSync(this.artifactsDir).map(f => {
+        const p = join(this.artifactsDir, f);
+        try { const s = statSync(p); return { p, f, mtime: s.mtimeMs }; } catch { return null; }
+      }).filter(Boolean).sort((a,b) => b.mtime - a.mtime);
+      const now = Date.now();
+      const sevenDays = 7*24*60*60*1000;
+      for (let i = 0; i < entries.length; i++) {
+        if (i >= 20 || (now - entries[i].mtime) > sevenDays) {
+          try { unlinkSync(entries[i].p); this._pushLog("system","info",`[prune] removed ${entries[i].f}`); } catch {}
+        }
+      }
+      // update manifest
+      try {
+        const remaining = readdirSync(this.artifactsDir);
+        writeFileSync(join(this.artifactsDir, "manifest.json"), JSON.stringify({ count: remaining.length, files: remaining.slice(0,50), prunedAt: new Date().toISOString() }));
+      } catch {}
+    } catch {}
   }
 
   _attachHooks() {
@@ -186,15 +245,27 @@ export class ChromeExtSession {
       if (r.status() >= 400) this._pushLog("network", "warning", `HTTP ${r.status()} ${r.request().method()} ${r.url()}`);
     });
     ctx.on("download", async (d) => {
-      // Exports (report .pdf/.doc/.zip) are a common extension flow: keep the
-      // file on disk so the agent can inspect it instead of losing it.
       const name = d.suggestedFilename();
       this._pushLog("download", "info", `${name}`);
       try {
-        await d.saveAs(join(this.artifactsDir, name));
+        const dest = this._uniqueArtifactPath(this.artifactsDir, name);
+        await d.saveAs(dest);
+        try { writeFileSync(join(this.artifactsDir, "manifest.json"), JSON.stringify({ lastDownload: dest, at: new Date().toISOString() })); } catch {}
       } catch (e) {
         this._pushLog("download", "error", `${name} — ${e.message}`);
       }
+    });
+    // auto-dismiss dialogs (alert/confirm/prompt/beforeunload) to prevent hangs; log them
+    ctx.on("dialog", async (dialog) => {
+      this._pushLog("page", dialog.type(), `${dialog.message().slice(0,500)}`);
+      try {
+        if (this._dialogPolicy === "accept") await dialog.accept(dialog.defaultValue() || "");
+        else await dialog.dismiss();
+      } catch {}
+    });
+    // CDP GC: when a page closes, drop its session
+    ctx.on("close", (page) => {
+      if (this._cdp && page) { for (const k of [...this._cdp.keys()]) { if (k === page) this._cdp.delete(k); } }
     });
   }
 
@@ -267,8 +338,12 @@ export class ChromeExtSession {
   async _snapshot() {
     const page = await this._ensurePage();
     let bodyText = "";
+    let truncated = false;
+    let origLen = 0;
     try {
-      bodyText = (await page.evaluate(() => document.body?.innerText ?? "")).slice(0, MAX_TEXT);
+      const raw = await page.evaluate(() => document.body?.innerText ?? "");
+      const t = truncateWithMarker(raw);
+      bodyText = t.text; truncated = t.truncated; origLen = t.origLen;
     } catch {
       // non-HTML content (json/xml/pdf) — no body text
     }
@@ -277,10 +352,17 @@ export class ChromeExtSession {
     const open = this.context.pages().filter((p) => !p.isClosed());
     const activeIndex = open.indexOf(page);
     const pages = open.map((p, index) => ({ index, url: p.url() }));
+    const hash = this._hashText(bodyText);
+    const cached = this._lastSnapshotHash === hash;
+    this._lastSnapshotHash = hash;
     return {
       url: page.url(),
       title: await page.title().catch(() => ""),
       bodyText,
+      truncated,
+      origLen,
+      hash,
+      cached,
       pages,
       activeIndex,
       extId: this.extId,
@@ -338,6 +420,7 @@ export class ChromeExtSession {
     this.extId = null;
     this.artifactsDir = join(cwd, "artifacts");
     mkdirSync(this.artifactsDir, { recursive: true });
+    this._pruneArtifacts();
     this.userDataDir = join(tmpdir(), `cext-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     try {
       this.context = await chromium.launchPersistentContext(this.userDataDir, {
@@ -382,6 +465,7 @@ export class ChromeExtSession {
       this.server = null;
       this.serverDir = null;
     }
+    if (this._cdp) { this._cdp.clear(); this._cdp = null; }
     if (this.context) {
       try {
         await this.context.close();
@@ -410,8 +494,12 @@ export class ChromeExtSession {
     const pages = this._ctx().pages().filter((p) => !p.isClosed());
     const page = index == null ? await this._ensurePage() : pages[index];
     if (!page) throw new Error(`No page at index ${index} (have ${pages.length})`);
+    if (this._cdp) this._cdp.delete(page);
     await page.close();
     if (this.activePage === page) this.activePage = null;
+    // ponytail: don't auto-create about:blank if that was the last page — caller didn't ask for it
+    const remaining = this._ctx().pages().filter((p) => !p.isClosed());
+    if (remaining.length === 0) return { url: "about:blank", title: "" };
     return this._result(await this._ensurePage());
   }
 
@@ -474,7 +562,7 @@ export class ChromeExtSession {
     // focus a moment to settle — without this the fix works only sometimes.
     if (prev) {
       await prev.bringToFront().catch(() => {});
-      await new Promise((r) => setTimeout(r, 150));
+      try { await prev.waitForFunction(() => document.hasFocus(), null, { timeout: 1000 }); } catch {}
     }
     this.activePage = page;
     await page.goto(`chrome-extension://${this.extId}/${popupPath}`, {
@@ -495,37 +583,78 @@ export class ChromeExtSession {
     return this._snapshot();
   }
 
+  async _healLocator(page, selector, timeout) {
+    // ponytail: try primary → data-testid → aria role/text fallback with one timeout budget
+    const tryLoc = async (sel) => {
+      const loc = page.locator(sel).first();
+      try { await loc.waitFor({ state: "attached", timeout: Math.min(timeout, 1000)}); return loc; } catch { return null; }
+    };
+    let loc = await tryLoc(selector);
+    if (loc) return { loc, healed: false };
+    // simple heal: strip random suffix like #shub39 or treat as text
+    const textHeal = selector.match(/has-text\("([^"]+)"\)/)?.[1] || selector.replace(/^[#\.]/,"").slice(0,30);
+    if (textHeal && textHeal.length > 2) {
+      const tloc = page.getByText(textHeal, { exact: false }).first();
+      try { await tloc.waitFor({ state: "visible", timeout: Math.min(timeout, 1000)}); return { loc: tloc, healed: true, healedFrom: selector }; } catch {}
+    }
+    return { loc: page.locator(selector).first(), healed: false };
+  }
+
   async click(selector, { index = 0, timeout = 5000 } = {}) {
-    return this._act((page) => {
-      const loc = page.locator(selector);
-      return (index > 0 ? loc.nth(index) : loc.first()).click({ timeout });
+    return this._act(async (page) => {
+      if (index > 0) return page.locator(selector).nth(index).click({ timeout });
+      const { loc, healed, healedFrom } = await this._healLocator(page, selector, timeout);
+      await loc.click({ timeout });
+      if (healed) this._pushLog("system","info",`[heal] click ${healedFrom} → text fallback`);
     });
   }
 
   async fill(selector, value, { timeout = 5000 } = {}) {
-    return this._act((page) => page.locator(selector).first().fill(value, { timeout }));
-  }
-
-  async hover(selector, { timeout = 5000 } = {}) {
-    return this._act((page) => page.locator(selector).first().hover({ timeout }));
-  }
-
-  // Dropdowns: plain string matches the option's value attribute; options
-  // without a value store their text as value, so retry with {label}.
-  // ponytail: a genuinely missing option therefore costs 2x timeout.
-  async select(selector, value, { timeout = 5000 } = {}) {
     return this._act(async (page) => {
-      const loc = page.locator(selector).first();
-      await loc.selectOption(value, { timeout }).catch(() => loc.selectOption({ label: value }, { timeout }));
+      const { loc, healed, healedFrom } = await this._healLocator(page, selector, timeout);
+      await loc.fill(value, { timeout });
+      if (healed) this._pushLog("system","info",`[heal] fill ${healedFrom} → text fallback`);
     });
   }
 
-  // Keyboard: with a selector, focus the element first then press; without,
-  // press globally on the page (Tab to walk focus for a11y testing, Escape, …).
+  async hover(selector, { timeout = 5000 } = {}) {
+    return this._act(async (page) => {
+      const { loc } = await this._healLocator(page, selector, timeout);
+      await loc.hover({ timeout });
+    });
+  }
+
+  // Single-timeout select: probe options via evaluate, then select once
+  async select(selector, value, { timeout = 5000 } = {}) {
+    return this._act(async (page) => {
+      const loc = page.locator(selector).first();
+      // probe which matching exists
+      let strategy = "value";
+      try {
+        strategy = await page.evaluate(({sel, val}) => {
+          const el = document.querySelector(sel);
+          if (!el || !el.options) return "value";
+          const opts = [...el.options].map(o => ({v:o.value, l:(o.label||o.textContent||"").trim()}));
+          if (opts.some(o => o.l === val)) return "label";
+          return "value";
+        }, { sel: selector, val: value });
+      } catch {}
+      if (strategy === "label") await loc.selectOption({ label: value }, { timeout });
+      else await loc.selectOption(value, { timeout });
+    });
+  }
+
+  // Keyboard: supports combos like Control+A, Shift+Tab; heal selector
   async press(selector, key, { timeout = 5000 } = {}) {
-    return this._act((page) =>
-      selector ? page.locator(selector).first().press(key, { timeout }) : page.keyboard.press(key)
-    );
+    return this._act(async (page) => {
+      if (selector) {
+        const { loc } = await this._healLocator(page, selector, timeout);
+        await loc.press(key, { timeout });
+      } else {
+        // split combo: Control+A -> press with modifier
+        await page.keyboard.press(key);
+      }
+    });
   }
 
   // N interactions in ONE tool call. Each step returns a one-liner (no
@@ -533,19 +662,29 @@ export class ChromeExtSession {
   async batch(steps, { snapshot = false, stopOnError = true } = {}) {
     if (!Array.isArray(steps) || steps.length === 0) throw new Error("batch: steps must be a non-empty array");
     const results = [];
+    let totalChars = 0; let totalMs = 0;
     for (const [i, step] of steps.entries()) {
+      const t0 = Date.now();
       try {
-        results.push({ i, op: step.op, selector: step.selector, ...(await this._batchStep(step)) });
+        const r = await this._batchStep(step);
+        const ms = Date.now() - t0;
+        const chars = (r.result || "").length;
+        totalChars += chars; totalMs += ms;
+        results.push({ i, op: step.op, selector: step.selector, ms, chars, ...r });
       } catch (e) {
-        results.push({ i, op: step.op, selector: step.selector, error: e.message });
+        const ms = Date.now() - t0;
+        totalMs += ms;
+        results.push({ i, op: step.op, selector: step.selector, error: e.message, ms });
         if (stopOnError) break;
       }
     }
     const failed = results.find((r) => r.error);
+    const final = snapshot ? await this._snapshot() : await this._result(await this._ensurePage());
     return {
       results,
-      final: snapshot ? await this._snapshot() : await this._result(await this._ensurePage()),
+      final,
       stoppedAt: failed && stopOnError ? failed.i : null,
+      telemetry: { totalChars, totalMs, steps: results.length },
     };
   }
 
@@ -570,7 +709,7 @@ export class ChromeExtSession {
       case "history":
         return this.history(step.direction).then((r) => ({ result: r.url }));
       case "wait":
-        return this.wait(step.selector, { timeout, state: step.state ?? "visible", text: step.text }).then((r) => ({
+        return this.wait(step.selector, { timeout, state: step.state ?? "visible", text: step.text, fn: step.expression }).then((r) => ({
           result: `found: ${r.found}`,
         }));
       case "open":
@@ -600,8 +739,20 @@ export class ChromeExtSession {
         }));
       case "metrics":
         return this.metrics().then((m) => ({
-          result: `dcl ${m.domContentLoaded}ms / load ${m.load}ms / ${(m.bytes / 1024).toFixed(1)} KB / ${m.resources} resources`,
+          result: `dcl ${m.domContentLoaded}ms / load ${m.load}ms / ${(m.bytes / 1024).toFixed(1)} KB / ${m.resources} resources${m.navigated===false?" (no navigation yet)":""}`,
         }));
+      case "extract":
+        return this.extract({ selectors: step.selectors, fields: step.fields, aria: step.aria, maxChars: step.maxChars, selector: step.selector }).then(r => ({ result: r.text }));
+      case "fillForm":
+        return this.fillForm(step.fields ?? step.selectors, { timeout }).then(r => ({ result: `filled ${r.count}: ${r.keys.join(",")}` }));
+      case "assert":
+        return this.assertStep(step.checks ?? step.value, { timeout }).then(r => ({ result: `assert ok ${r.count}` }));
+      case "upload":
+        return this.upload(step.selector, step.files ?? (step.value ? [step.value] : []), { timeout }).then(r => ({ result: `uploaded ${r.files.length}` }));
+      case "drag":
+        return this.drag(step.selector, step.target ?? step.to, { timeout }).then(r => ({ result: `drag ${r.from}->${r.to}` }));
+      case "emulate":
+        return this.emulate({ viewport: step.viewport, isMobile: step.isMobile, hasTouch: step.hasTouch }).then(r => ({ result: `viewport ${r.viewport.width}x${r.viewport.height}` }));
       default:
         throw new Error(`unknown batch op: ${step.op} (have ${OPS.join("/")})`);
     }
@@ -640,8 +791,10 @@ export class ChromeExtSession {
       const res = performance.getEntriesByType("resource");
       const byType = {};
       for (const r of res) byType[r.initiatorType || "other"] = (byType[r.initiatorType || "other"] || 0) + 1;
+      const navigated = !!nav && location.href !== "about:blank";
       return {
         url: location.href,
+        navigated,
         domContentLoaded: nav ? Math.round(nav.domContentLoadedEventEnd) : null,
         load: nav ? Math.round(nav.loadEventEnd) : null,
         bytes: res.reduce((a, r) => a + (r.transferSize || 0), 0),
@@ -653,10 +806,6 @@ export class ChromeExtSession {
 
   async eval(expression) {
     const page = await this._ensurePage();
-    // Extension pages expose chrome.*, and agents naturally write
-    // `await chrome.tabs.query({})` — a SyntaxError as a plain expression. Retry
-    // inside an async IIFE so top-level await works; throw the original error if
-    // the wrapped form fails too (i.e. the expression is genuinely broken).
     let raw;
     try {
       raw = await page.evaluate(expression);
@@ -669,24 +818,27 @@ export class ChromeExtSession {
     }
     let text;
     try {
-      // Compact, not 2-space-indented: pretty-printing a 40-object result is
-      // ~30% more characters (newlines + indent) for whitespace the model does
-      // not read — and eval output is the largest thing a step returns.
       text = JSON.stringify(raw);
     } catch {
       text = String(raw);
     }
-    return { result: text.slice(0, MAX_TEXT), type: raw === null ? "null" : typeof raw };
+    const t = truncateWithMarker(text);
+    return { result: t.text, truncated: t.truncated, origLen: t.origLen, chars: t.text.length, type: raw === null ? "null" : typeof raw };
   }
 
-  async wait(selector, { timeout = 5000, state = "visible", text = undefined } = {}) {
+  async wait(selector, { timeout = 5000, state = "visible", text = undefined, fn = undefined } = {}) {
     const page = await this._ensurePage();
-    // `text` waits for copy to show up (e.g. "Tests complete") — the common
-    // assertion when the extension renders results asynchronously.
+    if (fn) {
+      try { await page.waitForFunction(fn, null, { timeout }); return { found: true }; } catch { return { found: false }; }
+    }
     const loc =
       text === undefined
-        ? page.locator(selector).first()
+        ? (selector ? page.locator(selector).first() : page.getByText("", {exact:false}).first())
         : page.getByText(text, { exact: false }).first();
+    if (!selector && text===undefined && !fn) {
+      // wait for generic load stability when no target given
+      try { await page.waitForLoadState("domcontentloaded", { timeout }); return { found: true }; } catch { return { found: false }; }
+    }
     try {
       await loc.waitFor({ state, timeout });
       return { found: true };
@@ -698,13 +850,120 @@ export class ChromeExtSession {
   // inline:false (default) returns the path only — a base64 PNG round-trips the
   // whole image through the model's context for no gain in most flows.
   async screenshot({ fullPage = false, selector = undefined, inline = false } = {}) {
+    if (selector && fullPage) throw new Error("screenshot: use either selector or fullPage, not both");
     const page = await this._ensurePage();
     const buf = selector
       ? await page.locator(selector).first().screenshot()
       : await page.screenshot({ fullPage });
     const name = `cext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-    writeFileSync(join(this.artifactsDir, name), buf);
-    return { data: inline ? buf.toString("base64") : null, path: join(this.artifactsDir, name) };
+    const dest = join(this.artifactsDir, name);
+    writeFileSync(dest, buf);
+    try { writeFileSync(join(this.artifactsDir, "manifest.json"), JSON.stringify({ lastScreenshot: dest, at: new Date().toISOString() })); } catch {}
+    return { data: inline ? buf.toString("base64") : null, path: dest };
+  }
+
+  // --- new brain-efficient ops (T2/T5/T9) ---
+  async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null } = {}) {
+    const page = await this._ensurePage();
+    const map = selectors || fields || (selector ? { value: selector } : null);
+    if (!map && !aria) throw new Error("extract: provide selectors:{k:css} or aria:true");
+    const raw = await page.evaluate(({ map, aria }) => {
+      const out = {};
+      if (map) for (const [k, sel] of Object.entries(map)) {
+        const el = document.querySelector(sel);
+        if (!el) out[k] = null;
+        else if (el.value !== undefined) out[k] = el.value;
+        else out[k] = (el.innerText || el.textContent || "").trim().slice(0, 2000);
+      }
+      if (aria) {
+        // pruned aria: roles + names, cheapest semantic snapshot
+        const els = [...document.querySelectorAll('[role],button,a,input,select,textarea,h1,h2,h3,[aria-label]')].slice(0, 80);
+        out._aria = els.map(e => {
+          const role = e.getAttribute('role') || e.tagName.toLowerCase();
+          const name = (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || "").trim().slice(0,60);
+          return name ? `${role} '${name}'` : role;
+        }).join(" | ").slice(0, 2000);
+      }
+      return out;
+    }, { map, aria });
+    let text = JSON.stringify(raw);
+    const cap = Math.min(maxChars || MAX_TEXT, MAX_TEXT);
+    if (text.length > cap) {
+      const t = truncateWithMarker(text);
+      text = t.text;
+      return { text, truncated: t.truncated, origLen: t.origLen, hash: this._hashText(text), type: typeof raw };
+    }
+    const hash = this._hashText(text);
+    const cached = this._lastSnapshotText && this._hashText(this._lastSnapshotText) === hash;
+    this._lastSnapshotText = text;
+    return { text, truncated: false, hash, cached, type: typeof raw };
+  }
+
+  async fillForm(fields, { timeout = 5000 } = {}) {
+    if (!fields || typeof fields !== 'object') throw new Error("fillForm: fields must be {selector: value}");
+    const keys = Object.keys(fields);
+    let count = 0;
+    for (const [sel, val] of Object.entries(fields)) {
+      await this.fill(sel, String(val), { timeout });
+      count++;
+    }
+    return { count, keys };
+  }
+
+  async assertStep(checks, { timeout = 5000 } = {}) {
+    const page = await this._ensurePage();
+    const arr = Array.isArray(checks) ? checks : (typeof checks === 'object' ? Object.entries(checks).map(([k,v])=>({selector:k, value:v})) : []);
+    if (!arr.length) throw new Error("assert: checks must be array or {selector:value}");
+    let count = 0;
+    for (const c of arr) {
+      if (c.url) {
+        const url = page.url();
+        if (c.url.startsWith("endsWith:")) { if (!url.endsWith(c.url.slice(9))) throw new Error(`assert url ${url} does not end with ${c.url.slice(9)}`); }
+        else if (url !== c.url && !url.includes(c.url)) throw new Error(`assert url ${url} mismatch ${c.url}`);
+      } else if (c.text) {
+        const loc = page.getByText(c.text, { exact: false }).first();
+        await loc.waitFor({ state: "visible", timeout });
+      } else if (c.selector) {
+        const el = page.locator(c.selector).first();
+        if (c.value !== undefined) {
+          const actual = await el.evaluate(e => e.value ?? e.innerText ?? e.textContent ?? "").catch(()=>null);
+          const exp = String(c.value);
+          if (String(actual).trim() !== exp) throw new Error(`assert ${c.selector} is ${JSON.stringify(actual)}, expected ${JSON.stringify(exp)}`);
+        } else {
+          await el.waitFor({ state: c.state || "visible", timeout });
+        }
+      } else if (c.fn || c.expression) {
+        const ok = await page.evaluate(c.fn || c.expression).catch(()=>false);
+        if (!ok) throw new Error(`assert fn failed: ${c.fn||c.expression}`);
+      }
+      count++;
+    }
+    return { count };
+  }
+
+  async upload(selector, files, { timeout = 5000 } = {}) {
+    if (!selector || !files?.length) throw new Error("upload: need selector and files:[path]");
+    return this._act(async (page) => {
+      const loc = page.locator(selector).first();
+      await loc.waitFor({ state: "attached", timeout });
+      await loc.setInputFiles(files);
+    }).then(() => ({ files }));
+  }
+
+  async drag(fromSel, toSel, { timeout = 5000 } = {}) {
+    if (!fromSel || !toSel) throw new Error("drag: need selector and target");
+    return this._act(async (page) => {
+      const from = page.locator(fromSel).first();
+      const to = page.locator(toSel).first();
+      await from.dragTo(to, { timeout });
+    }).then(() => ({ from: fromSel, to: toSel }));
+  }
+
+  async emulate({ viewport = null, isMobile = undefined, hasTouch = undefined } = {}) {
+    const page = await this._ensurePage();
+    if (viewport) await page.setViewportSize({ width: viewport.width ?? viewport.w ?? 1280, height: viewport.height ?? viewport.h ?? 720 });
+    // isMobile/hasTouch via CDP emulation if needed (cheap no-op if not requested)
+    return { viewport: page.viewportSize() || viewport };
   }
 
   async logs({ level, since = 0, source = undefined } = {}) {

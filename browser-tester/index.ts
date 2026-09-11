@@ -48,13 +48,24 @@ const batchStep = Type.Object({
   level: Type.Optional(oneOf(["log", "error", "warning", "debug", "info", "pageerror"], "Log level")),
   source: Type.Optional(oneOf(["page", "worker", "network", "download", "workerevent"], "Log source")),
   since: Type.Optional(Type.Integer({ description: "Start index for logs" })),
+  // brain-efficient new ops — all batch-only, no new tool
+  selectors: Type.Optional(Type.Any({ description: "Map {key:css} for extract {op:'extract', selectors:{email:'#e'}} or fillForm {op:'fillForm', fields:{'#a':'v'}}" })),
+  fields: Type.Optional(Type.Any({ description: "Alias for selectors in fillForm" })),
+  checks: Type.Optional(Type.Any({ description: "Array for assert {op:'assert', checks:[{selector,value},{text},{url}]}" })),
+  files: Type.Optional(Type.Array(Type.String({ description: "File paths for upload" }))),
+  target: Type.Optional(Type.String({ description: "Target selector for drag" })),
+  viewport: Type.Optional(Type.Any({ description: "Viewport {width,height} or {w,h} for emulate" })),
+  isMobile: Type.Optional(Type.Boolean({ description: "isMobile for emulate" })),
+  hasTouch: Type.Optional(Type.Boolean({ description: "hasTouch for emulate" })),
+  aria: Type.Optional(Type.Boolean({ description: "Include pruned aria snapshot in extract" })),
+  maxChars: Type.Optional(Type.Integer({ description: "Cap for extract result" })),
 });
 
 // Result shapes. Most tools return a page snapshot; the rest return plain text.
 const snapText = (s: any) =>
   `URL: ${s.url}\nTitle: ${s.title}\nActive page: ${s.activeIndex} of ${
     s.pages.length
-  } page(s): ${s.pages.map((p: any) => `[${p.index}] ${p.url}`).join(", ")}\n--- body text ---\n${
+  } page(s): ${s.pages.map((p: any) => `[${p.index}] ${p.url}`).join(", ")}${s.truncated ? ` [truncated ${s.origLen}→${(s.bodyText||"").length}]` : ""}${s.cached ? ` [cached ${s.hash}]` : ""}\n--- body text ---\n${
     s.bodyText || "(no text)"
   }`;
 
@@ -139,7 +150,7 @@ const tools: {
     name: "cext_snapshot",
     label: "Snapshot Page",
     description:
-      "Page URL, title, open pages and body text — the only reader of body text.",
+      "Page URL, title, open pages and body text — the only reader of body text. Prefer extract in batch for pruned aria/selectors (cheaper).",
     promptSnippet: "Read page URL, title and body text",
     parameters: Type.Object({}),
     run: () => session.snapshot().then(snap),
@@ -220,9 +231,10 @@ const tools: {
     promptSnippet: "Run many browser steps in one call",
     promptGuidelines: [
       "cext_batch is the action surface: click/fill/press/select/hover/wait/scroll/history/open/switch/closePage/eval/screenshot/logs/metrics are steps in it, not tools of their own.",
-      "End a batch with an {op:'eval'} step returning the assertions you care about; that replaces a separate snapshot.",
-      "Pass snapshot:true to include body text (default false — one-liners only).",
-      "Steps run in order; stopOnError:true stops at first failure and reports stoppedAt.",
+      "Brain-efficient cheapest pattern: {op:'fillForm', fields:{'#a':'v'}} + {op:'extract', selectors:{email:'#e'}, aria:true} + {op:'assert', checks:[{selector:'#x',value:'y'},{url:'endsWith:?'}]} in ONE batch — 1 call vs 3, 6× fewer tokens than raw innerText/eval loops.",
+      "Use extract over eval+innerHTML.slice and fillForm over N fills; both return compact JSON with truncated/hash/cached so unchanged DOM costs 0 tokens.",
+      "Pass snapshot:true only when you need raw bodyText; prefer extract (pruned aria+selectors) — snapshot marks truncated/cached.",
+      "Steps run in order; stopOnError:true stops at first failure and reports stoppedAt; each step returns ms/chars and batch returns telemetry {totalMs,totalChars}.",
     ],
     parameters: Type.Object({
       steps: Type.Array(batchStep, { description: "Steps to run, in order" }),
@@ -232,15 +244,31 @@ const tools: {
       stopOnError: Type.Optional(
         Type.Boolean({ description: "Stop at first failure (default true)" })
       ),
+      record: Type.Optional(Type.Boolean({ description: "Save steps to scenarios/auto-<ts>.json for zero-cost replay (no new tool)" })),
     }),
-    run: (p) =>
-      session.batch(p.steps, { snapshot: p.snapshot ?? false, stopOnError: p.stopOnError ?? true }).then((r) =>
-        text(
-          `${r.results.map(stepLine).join("\n")}\n--- final ---\n${r.final.url}\n${r.final.title ?? ""}` +
-            (r.stoppedAt === null ? "" : `\nstopped at step ${r.stoppedAt}`),
-          { r }
-        )
-      ),
+    run: async (p, ctx) => {
+      const r: any = await session.batch(p.steps, { snapshot: p.snapshot ?? false, stopOnError: p.stopOnError ?? true });
+      if (p.record) {
+        try {
+          const { mkdirSync, writeFileSync } = await import("node:fs");
+          const { join } = await import("node:path");
+          const dir = join(ctx.cwd || process.cwd(), "browser-tester", "scenarios");
+          mkdirSync(dir, { recursive: true });
+          const out = join(dir, `auto-${Date.now()}.json`);
+          writeFileSync(out, JSON.stringify({ launch: session.launchOpts || {}, steps: p.steps, stopOnError: p.stopOnError ?? true }, null, 2));
+          (r as any).recorded = out;
+        } catch {}
+      }
+      return text(
+        `${r.results.map(stepLine).join("\n")}\n--- final ---\n${r.final.url}\n${r.final.title ?? ""}` +
+          (r.stoppedAt === null ? "" : `\nstopped at step ${r.stoppedAt}`) +
+          (r.telemetry ? `\n[telemetry] ${r.telemetry.totalMs}ms ${r.telemetry.totalChars} chars over ${r.telemetry.steps} steps` : "") +
+          (r.final.truncated ? ` [snapshot truncated ${r.final.origLen}→${(r.final.bodyText||"").length}]` : "") +
+          (r.final.cached ? ` [cached ${r.final.hash}]` : "") +
+          ((r as any).recorded ? `\n[recorded] ${(r as any).recorded}` : ""),
+        { r }
+      );
+    },
   },
   {
     name: "cext_cdp",

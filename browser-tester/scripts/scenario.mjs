@@ -9,14 +9,17 @@
 //
 // ponytail: still pi-free and still browser-required, like session.js — the
 // whole point is that this runs from a plain shell with zero model round trips.
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, join } from "node:path";
 import { ChromeExtSession, stepLine } from "../src/session.js";
 
 const firstLine = (s) => String(s).split("\n")[0];
-const file = process.argv[2];
+const args = process.argv.slice(2);
+const file = args.find(a => !a.startsWith("--"));
+const wantReport = args.includes("--report") || args.some(a => a.startsWith("--report"));
+const reportHtml = wantReport;
 if (!file) {
-  console.error("usage: node scripts/scenario.mjs <scenario.json>");
+  console.error("usage: node scripts/scenario.mjs <scenario.json> [--report]");
   process.exit(2);
 }
 
@@ -37,19 +40,29 @@ const session = new ChromeExtSession();
 let crash = null;
 let failed = null;
 let url = null;
+let run = null;
 try {
   await session.launch({ cwd: process.cwd(), ...launch });
-  const run = await session.batch(steps, { stopOnError });
+  run = await session.batch(steps, { stopOnError });
   url = run.final.url;
-  // Same one-line-per-step format as cext_batch: stepLine() lives in session.js.
   for (const r of run.results) console.log(stepLine(r.error ? { ...r, error: firstLine(r.error) } : r));
+  if (run.telemetry) console.log(`[telemetry] ${run.telemetry.totalMs}ms ${run.telemetry.totalChars} chars`);
   failed = run.results.find((r) => r.error) ?? null;
 } catch (e) {
   crash = e;
 } finally {
-  // A failed scenario must not leave Chromium (and its profile dir) behind for
-  // the next run to trip over.
   await session.close().catch(() => {});
+}
+
+if (reportHtml && run) {
+  try {
+    const dir = join(process.cwd(), "artifacts");
+    mkdirSync(dir, { recursive: true });
+    const html = `<!doctype html><meta charset="utf-8"><title>scenario ${file}</title><style>body{font:13px system-ui;padding:16px} .ok{color:green}.fail{color:red} pre{background:#f6f8fa;padding:10px;border-radius:8px}</style><h1>${file} — ${failed||crash?"FAIL":"PASS"}</h1><p>${steps.length} steps → ${url||""}</p><pre>${run.results.map(stepLine).join("\n")}</pre><p>telemetry: ${run.telemetry?`${run.telemetry.totalMs}ms ${run.telemetry.totalChars} chars`:""}</p>`;
+    const out = join(dir, `scenario-${Date.now()}.html`);
+    writeFileSync(out, html);
+    console.log(`report: ${out}`);
+  } catch {}
 }
 
 if (crash) {

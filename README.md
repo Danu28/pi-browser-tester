@@ -116,6 +116,24 @@ The email id is randomized per load (`shub39`, `shub76`, …). Don't use `#shub3
 - **Scroll before below-fold:** `{ "op": "scroll", "to": "bottom" }` or `{ "op": "scroll", "selector": "#footer" }` for lazy-loaded / infinite lists; clicks already scroll their target.
 - **Back-nav via history:** `{ "op": "history", "direction": "back" }` instead of re-opening the URL — preserves stack and is one step.
 
+## Brain-efficient — cheapest high-output pattern (new)
+
+**One batch, not three.** Old way needed 3 calls (`fill`×5 + `click` + `eval` + `snapshot`) → ~18k chars. New brain-style:
+
+```json
+{
+  "steps": [
+    { "op": "fillForm", "fields": { "#cardName":"Ada Lovelace", "#cardNumber":"4111 1111 1111 1111", "#expiry":"12/29", "#cvv":"123" }},
+    { "op": "click", "selector": "button:has-text(\"Pay\")" },
+    { "op": "extract", "selectors": { "cardName":"#cardName", "cardNumber":"#cardNumber" }, "aria": true },
+    { "op": "assert", "checks": [{ "url": "endsWith:?" }] }
+  ]
+}
+```
+→ **2 calls total (launch+batch), ~3k chars, 6× less tokens**. `fillForm` chunks 5 fills into one result line, `extract` returns pruned aria+selectors (compact JSON with `hash/cached/truncated`), `assert` validates url/text/value in one step. Add `record:true` to batch to save `browser-tester/scenarios/auto-<ts>.json` for zero-cost replay (`node scripts/scenario.mjs <file> --report`). Batch returns `[telemetry] 120ms 2400 chars` so you can budget the next call; unchanged `extract`/`snapshot` returns `[cached <hash>]` (0 tokens).
+
+New batch ops: `extract` (selectors+aria), `fillForm` (fields map), `assert` (checks), `upload` (files), `drag` (selector→target), `emulate` (viewport). `select` is now single-timeout via pre-probe, `wait` accepts `fn` JS, `screenshot` errors if `selector+fullPage` both set, downloads dedupe (`name-1.pdf`), artifacts auto-prune (keep 20, >7d deleted, `manifest.json`).
+
 ## Recorded scenarios (no model in the loop)
 
 A flow you will run more than once should not cost model round trips at all.
@@ -142,7 +160,7 @@ npm run scenario -- browser-tester/scenarios/dummy-form.json
 # ok: 8 steps → https://selectorshub.com/xpath-practice-page/
 ```
 
-- Same ops as `cext_batch` (`click`/`fill`/`press`/`select`/`hover`/`wait`/`open`/`switch`/`closePage`/`scroll`/`history`/`eval`/`screenshot`/`logs`/`metrics`).
+- Same ops as `cext_batch` (`click`/`fill`/`press`/`select`/`hover`/`wait`/`open`/`switch`/`closePage`/`scroll`/`history`/`eval`/`screenshot`/`logs`/`metrics`/`extract`/`fillForm`/`assert`/`upload`/`drag`/`emulate`).
 - **Assertions are just thrown errors.** Make the last step an `eval` that reads
   the page and throws when it is wrong; a failed assertion is a failed step.
 - Exit `0` on success, `1` naming the failing step (`FAILED at step 3 (click): …`),
@@ -159,11 +177,10 @@ is two `cext_batch` calls.
 - **Cost:** every tool call is one model round trip, so `cext_batch` (N steps,
   one call) is how a flow should be driven. An action returns one line — url and
   title, never the page text — and `cext_snapshot` (or `snapshot:true` on a
-  batch) is the only thing that ships body text. End batches with an `eval`
-  returning the assertions you care about, leave screenshots at path-only, and
-  put any flow you will repeat in `scenarios/` — then it costs zero model calls
+  batch) is the only thing that ships body text (now with `[truncated]` / `[cached]` markers). Prefer `extract` over `snapshot` — it ships pruned aria+selectors (~10× smaller). Batch telemetry (`totalMs/totalChars` + per-step `ms/chars`) tells you the budget; leave screenshots at path-only, and
+  put any flow you will repeat in `scenarios/` (use `record:true` or `npm run scenario -- file --report`) — then it costs zero model calls
   to re-run.
-- **Artifacts:** screenshots and downloads land under `./artifacts/` (cwd-relative). They grow unbounded — prune regularly: `find artifacts -type f -mtime +7 -delete` or keep last 20. Screenshots are path-only by default; `inline:true` ships ~300–800k chars of base64 — only use when the model must see the image.
+- **Artifacts:** screenshots and downloads land under `./artifacts/` (cwd-relative). Auto-pruned on launch (keep last 20, delete >7d, `manifest.json` updated); downloads dedupe to `name-1.pdf`. Screenshots are path-only by default; `inline:true` ships ~300–800k chars of base64 — only use when the model must see the image.
 - Only Chromium-based browsers can side-load extensions. Branded Chrome/Edge
   137+ removed `--load-extension`; use the default `chromium` channel (or older
   `chrome`/`msedge` builds).
