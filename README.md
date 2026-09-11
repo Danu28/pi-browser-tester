@@ -118,6 +118,30 @@ The email id is randomized per load (`shub39`, `shub76`, …). Don't use `#shub3
 
 ## Brain-efficient — cheapest high-output pattern (new)
 
+**Any site in 1-2 calls.** By default any site needs `launch` + `batch` = 2 calls. With `launch {url, steps:[...]}` it's **1 call** (launch+act). Discovery is one `extract` — no probing.
+
+**Auto-discover any site (unknown selectors):**
+
+```json
+{ "op": "extract", "auto": true }
+// → { inventory:[{tag:"input", type:"email", placeholder:"Enter email", selector:"input[name='email']", value:""}], forms:[...], _aria:"..." }
+```
+→ Feed `inventory[].selector` straight into `fillForm` — no manual `eval(innerHTML)` loops. `"auto":true` scans any page (React/Vue/Angular, random ids) and returns stable selectors (`[name]`, `[placeholder]`, `[type]`) that survive `shub46`-style randomization. `heal` also auto-fixes `shub/ember/react` random ids.
+
+**One-batch any-site example (launch+steps = 1 LLM call):**
+
+```json
+{
+  "url": "https://example.com/form",
+  "steps": [
+    { "op": "extract", "auto": true },
+    { "op": "fillForm", "fields": { "input[name='email']":"a@b.com", "#pass":"x" }},
+    { "op": "assert", "checks": [{ "selector": "input[name='email']", "value": "a@b.com" }] }
+  ]
+}
+```
+call: `cext_launch {url, steps}` → 1 call does open+discover+fill+assert. Without `steps`, it's 2 calls (`launch` + `batch`).
+
 **One batch, not three.** Old way needed 3 calls (`fill`×5 + `click` + `eval` + `snapshot`) → ~18k chars. New brain-style:
 
 ```json

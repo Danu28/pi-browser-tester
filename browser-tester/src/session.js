@@ -393,7 +393,7 @@ export class ChromeExtSession {
       : this._extIdFromPath(this.extDir);
   }
 
-  async launch({ extensionPath, url, headless = false, channel = "chromium", cwd = process.cwd(), onProgress = () => {} }) {
+  async launch({ extensionPath, url, headless = false, channel = "chromium", cwd = process.cwd(), onProgress = () => {}, steps = null, snapshot = false, stopOnError = true } = {}) {
     // No extensionPath = plain website-testing mode (no side-load flags below).
     this.extDir = extensionPath ? resolve(cwd, extensionPath) : null;
     // Kept so cext_reload can relaunch with the same options when it has to.
@@ -447,7 +447,11 @@ export class ChromeExtSession {
 
     await this._ensurePage();
     if (url) await this.open(url);
-
+    // ponytail: launch+steps in one LLM call — any site can go 1-call floor (launch+batch) instead of 2
+    let batchResult = null;
+    if (steps && Array.isArray(steps) && steps.length) {
+      batchResult = await this.batch(steps, { snapshot, stopOnError });
+    }
     const workers = this.context.serviceWorkers();
     return {
       extId: this.extId,
@@ -456,6 +460,7 @@ export class ChromeExtSession {
       serviceWorkers: workers.map((w) => w.url()),
       backgroundPages: this.context.backgroundPages().map((p) => p.url()),
       page: this.activePage.url(),
+      batch: batchResult,
     };
   }
 
@@ -584,19 +589,61 @@ export class ChromeExtSession {
   }
 
   async _healLocator(page, selector, timeout) {
-    // ponytail: try primary → data-testid → aria role/text fallback with one timeout budget
     const tryLoc = async (sel) => {
       const loc = page.locator(sel).first();
-      try { await loc.waitFor({ state: "attached", timeout: Math.min(timeout, 1000)}); return loc; } catch { return null; }
+      try { await loc.waitFor({ state: "attached", timeout: Math.min(timeout, 800)}); return loc; } catch { return null; }
     };
     let loc = await tryLoc(selector);
     if (loc) return { loc, healed: false };
-    // simple heal: strip random suffix like #shub39 or treat as text
+    // attribute-stable heal for any site: if selector is random id (digits, shub*, ember*, react-*), find stable alt via name/placeholder/type/label
+    try {
+      const healedSel = await page.evaluate((sel) => {
+        const isRandom = (s) => /^#?(shub|ember|react|mui|radix|chakra)\d+/i.test(s) || /^#[a-z]+\d{2,}$/i.test(s) || /\d{3,}/.test(s);
+        if (!isRandom(sel)) return null;
+        // try to find element that primary would have matched before id randomization: scan inputs
+        const cands = [...document.querySelectorAll('input,select,textarea,button')];
+        // prefer stable attributes: name, placeholder, type, aria-label, label text
+        for (const el of cands) {
+          const stable = el.getAttribute('name') || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+          if (stable) {
+            const trySel = `${el.tagName.toLowerCase()}[name='${stable}']`;
+            if (document.querySelector(trySel)) return trySel;
+          }
+          if (el.type) {
+            const tsel = `${el.tagName.toLowerCase()}[type='${el.type}']`;
+            const matches = document.querySelectorAll(tsel);
+            if (matches.length === 1) return tsel;
+            // if multiple, narrow by placeholder
+            const ph = el.placeholder;
+            if (ph) {
+              const psel = `${el.tagName.toLowerCase()}[placeholder='${ph}']`;
+              if (document.querySelector(psel)) return psel;
+            }
+          }
+        }
+        return null;
+      }, selector);
+      if (healedSel) {
+        const hloc = await tryLoc(healedSel);
+        if (hloc) return { loc: hloc, healed: true, healedFrom: selector, healedTo: healedSel };
+      }
+    } catch {}
+    // text fallback (any site)
     const textHeal = selector.match(/has-text\("([^"]+)"\)/)?.[1] || selector.replace(/^[#\.]/,"").slice(0,30);
     if (textHeal && textHeal.length > 2) {
       const tloc = page.getByText(textHeal, { exact: false }).first();
-      try { await tloc.waitFor({ state: "visible", timeout: Math.min(timeout, 1000)}); return { loc: tloc, healed: true, healedFrom: selector }; } catch {}
+      try { await tloc.waitFor({ state: "visible", timeout: Math.min(timeout, 800)}); return { loc: tloc, healed: true, healedFrom: selector }; } catch {}
     }
+    // final: closest input by label proximity (any site)
+    try {
+      const labelSel = await page.evaluate(() => {
+        const inp = document.querySelector('input:not([type=hidden])');
+        if (!inp) return null;
+        const lab = inp.closest('label')?.innerText || document.querySelector(`label[for='${inp.id}']`)?.innerText || '';
+        return lab ? `input[placeholder='${inp.placeholder}']` : null;
+      });
+      if (labelSel) { const l = await tryLoc(labelSel); if (l) return { loc: l, healed: true, healedFrom: selector }; }
+    } catch {}
     return { loc: page.locator(selector).first(), healed: false };
   }
 
@@ -742,7 +789,7 @@ export class ChromeExtSession {
           result: `dcl ${m.domContentLoaded}ms / load ${m.load}ms / ${(m.bytes / 1024).toFixed(1)} KB / ${m.resources} resources${m.navigated===false?" (no navigation yet)":""}`,
         }));
       case "extract":
-        return this.extract({ selectors: step.selectors, fields: step.fields, aria: step.aria, maxChars: step.maxChars, selector: step.selector }).then(r => ({ result: r.text }));
+        return this.extract({ selectors: step.selectors, fields: step.fields, aria: step.aria, maxChars: step.maxChars, selector: step.selector, auto: step.auto }).then(r => ({ result: r.text }));
       case "fillForm":
         return this.fillForm(step.fields ?? step.selectors, { timeout }).then(r => ({ result: `filled ${r.count}: ${r.keys.join(",")}` }));
       case "assert":
@@ -863,29 +910,63 @@ export class ChromeExtSession {
   }
 
   // --- new brain-efficient ops (T2/T5/T9) ---
-  async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null } = {}) {
+  async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null, auto = false } = {}) {
     const page = await this._ensurePage();
     const map = selectors || fields || (selector ? { value: selector } : null);
-    if (!map && !aria) throw new Error("extract: provide selectors:{k:css} or aria:true");
-    const raw = await page.evaluate(({ map, aria }) => {
+    // auto-discover for any site when no selectors given — single-call inventory (generic)
+    const doAuto = auto || (!map && !aria);
+    const raw = await page.evaluate(({ map, aria, doAuto }) => {
       const out = {};
+      const stableSel = (el) => {
+        const name = el.getAttribute('name');
+        if (name) return `${el.tagName.toLowerCase()}[name='${name}']`;
+        const ph = el.getAttribute('placeholder');
+        if (ph) return `${el.tagName.toLowerCase()}[placeholder='${ph}']`;
+        const al = el.getAttribute('aria-label');
+        if (al) return `${el.tagName.toLowerCase()}[aria-label='${al}']`;
+        if (el.id && !/^(shub|ember|react|mui|radix|chakra)\d+/i.test(el.id) && !/\d{3,}/.test(el.id)) return `#${CSS.escape(el.id)}`;
+        const type = el.getAttribute('type');
+        if (type) return `${el.tagName.toLowerCase()}[type='${type}']`;
+        // label fallback
+        const lab = el.closest('label')?.innerText?.trim().slice(0,30);
+        if (lab) return `${el.tagName.toLowerCase()} near '${lab}'`;
+        return el.tagName.toLowerCase();
+      };
       if (map) for (const [k, sel] of Object.entries(map)) {
         const el = document.querySelector(sel);
         if (!el) out[k] = null;
         else if (el.value !== undefined) out[k] = el.value;
         else out[k] = (el.innerText || el.textContent || "").trim().slice(0, 2000);
       }
-      if (aria) {
-        // pruned aria: roles + names, cheapest semantic snapshot
-        const els = [...document.querySelectorAll('[role],button,a,input,select,textarea,h1,h2,h3,[aria-label]')].slice(0, 80);
+      if (doAuto) {
+        const els = [...document.querySelectorAll('input:not([type=hidden]),select,textarea,button,[role=button],a[href]')].slice(0, 60);
+        out.inventory = els.map(el => ({
+          tag: el.tagName.toLowerCase(),
+          type: el.type || '',
+          name: el.name || '',
+          placeholder: el.placeholder || '',
+          label: (el.closest('label')?.innerText || document.querySelector(`label[for='${el.id}']`)?.innerText || '').trim().slice(0,40),
+          text: (el.innerText || el.value || '').trim().slice(0,40),
+          selector: stableSel(el),
+          value: (el.value || '').slice(0,100)
+        }));
+        out.forms = [...document.querySelectorAll('form')].slice(0,5).map(f => ({
+          action: f.action || '',
+          method: f.method || '',
+          selector: f.id ? `#${CSS.escape(f.id)}` : 'form',
+          fields: [...f.querySelectorAll('input,select,textarea')].length
+        }));
+      }
+      if (aria || doAuto) {
+        const els = [...document.querySelectorAll('[role],button,a,input,select,textarea,h1,h2,h3,[aria-label]')].slice(0, 60);
         out._aria = els.map(e => {
           const role = e.getAttribute('role') || e.tagName.toLowerCase();
-          const name = (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || "").trim().slice(0,60);
+          const name = (e.getAttribute('aria-label') || e.innerText || e.value || e.placeholder || "").trim().slice(0,40);
           return name ? `${role} '${name}'` : role;
         }).join(" | ").slice(0, 2000);
       }
       return out;
-    }, { map, aria });
+    }, { map, aria, doAuto });
     let text = JSON.stringify(raw);
     const cap = Math.min(maxChars || MAX_TEXT, MAX_TEXT);
     if (text.length > cap) {

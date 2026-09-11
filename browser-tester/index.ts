@@ -59,6 +59,7 @@ const batchStep = Type.Object({
   hasTouch: Type.Optional(Type.Boolean({ description: "hasTouch for emulate" })),
   aria: Type.Optional(Type.Boolean({ description: "Include pruned aria snapshot in extract" })),
   maxChars: Type.Optional(Type.Integer({ description: "Cap for extract result" })),
+  auto: Type.Optional(Type.Boolean({ description: "Auto-discover inventory for any site (no selectors needed)" })),
 });
 
 // Result shapes. Most tools return a page snapshot; the rest return plain text.
@@ -101,7 +102,7 @@ const tools: {
     promptSnippet: "Launch a browser, optionally with an extension",
     promptGuidelines: [
       "Use cext_launch before any other cext_* tool. Call it again after edits — it tears down and relaunches fresh.",
-      "Website testing: omit extensionPath and drive pages with cext_batch (open/click/fill/select/hover/wait/scroll/history/eval/screenshot/logs/metrics); read page with cext_snapshot.",
+      "Website testing: omit extensionPath and drive pages with cext_batch. For minimum LLM calls on any site, pass steps in launch: {url, steps:[{op:'extract',auto:true},{op:'fillForm',fields:{...}},{op:'assert',checks:[...]}]} — 1 call instead of launch+batch (2).",
       "Extension testing: pass path to unpacked extension folder (with manifest.json), e.g. './sample-extension', then use cext_popup / cext_reload and cext_serve.",
     ],
     parameters: Type.Object({
@@ -119,20 +120,27 @@ const tools: {
           description: "Browser channel (default chromium)",
         })
       ),
+      steps: Type.Optional(Type.Array(batchStep, { description: "Optional batch steps to run right after launch — saves 1 LLM call for any site (launch+act in one)" })),
+      snapshot: Type.Optional(Type.Boolean({ description: "Include body text with steps (default false)" })),
+      stopOnError: Type.Optional(Type.Boolean({ description: "Stop at first failure (default true)" })),
     }),
     run: async (p, ctx) => {
-      const info = await session.launch({
+      const info: any = await session.launch({
         extensionPath: p.extensionPath ? normPath(p.extensionPath) : undefined,
         url: p.url,
         headless: p.headless ?? false,
         channel: p.channel ?? "chromium",
         cwd: ctx.cwd,
         onProgress: (m: string) => ctx.onUpdate?.({ content: [{ type: "text", text: m }] }),
+        steps: p.steps,
+        snapshot: p.snapshot ?? false,
+        stopOnError: p.stopOnError ?? true,
       });
+      const batchPart = info.batch ? `\n--- batch (${info.batch.results.length} steps) ---\n${info.batch.results.map(stepLine).join("\n")}${info.batch.telemetry ? `\n[telemetry] ${info.batch.telemetry.totalMs}ms ${info.batch.telemetry.totalChars} chars` : ""}${info.batch.stoppedAt!==null?`\nstopped at ${info.batch.stoppedAt}`:""}` : "";
       return text(
         `Launched: ${
           info.extId ? `extension id ${info.extId} (${info.extDir})` : "no extension loaded — plain website-testing mode"
-        }\n${info.serviceWorkers.length ? `service workers: ${info.serviceWorkers.join(", ")}` : ""}\npopup: ${info.popupPath ?? "none"}`,
+        }\n${info.serviceWorkers.length ? `service workers: ${info.serviceWorkers.join(", ")}` : ""}\npopup: ${info.popupPath ?? "none"}\npage: ${info.page}${batchPart}`,
         { info }
       );
     },
