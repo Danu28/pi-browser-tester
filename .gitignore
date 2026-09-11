@@ -1,6 +1,4 @@
 *.html
-!suggestion.html
-!suggestion-plan.html
 node_modules/
 artifacts/
 
