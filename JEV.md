@@ -122,6 +122,34 @@ See `browser-tester/scenarios/orangehrm-login.json` — the canonical Jev workfl
 
 Run offline: `npm run scenario -- browser-tester/scenarios/orangehrm-login.json --report`
 
+### How This Works for Any Site (not just OrangeHRM)
+
+Jev primitives are **site-agnostic** — they operate on the *auto-captured state* (`extract auto` → `{url,title,text,aria,inventory:[{tag,type,name,placeholder,selector}],forms,hasPassword,hasForm}`), which is the same DOM shape on **any framework** (plain HTML, React/Vue/Angular, randomized `shub/ember/mui` ids). You keep the **same 3 question templates**, only swap the `criteria` descriptions:
+
+- **Pattern A — Classify (choice):** `{login vs dashboard vs error}` on OrangeHRM becomes `{form vs listing vs article}` or `{checkout vs cart vs error}` on an e-commerce site. One `choice` call, parallel, typed.
+- **Pattern B — Grade readiness (score):** `["No form","Ready to fill","Fully ready"]` is reused on *any* form — selectorshub dummy-form, Stripe checkout, Salesforce — structural boosts (`hasPassword/hasForm/inputs.length`) calibrate automatically.
+- **Pattern C — Guardrail (noul):** `"Safe to fill / logged in / error visible"` becomes `"Search results loaded / payment succeeded / captcha present"` — `probability+confidence` gates the next `fill/click` via threshold (`0.75` reversible, `0.85-0.90` destructive).
+
+**Same 1-launch+batch flow on 3 sites:**
+
+```js
+// OrangeHRM login (auth):
+{op:"jev", questions:{pageType:{type:"choice", criteria:{login:"OrangeHRM login...", dashboard:"PIM..."}}, isLogin:{type:"noul", criteria:"ready"}}}
+// SelectorsHub dummy-form (random ids):
+{op:"jev", questions:{pageType:{type:"choice", criteria:{form:"form with randomized ids", listing:"practice table"}}, safeToFill:{type:"noul", criteria:"inputs visible+enabled"}}}
+// Any e-commerce checkout (generic):
+{op:"jev", questions:{readiness:{type:"score", criteria:["No cart","Cart ready","Checkout ready"]}, canPay:{type:"noul", criteria:"card fields fillable"}}}
+```
+→ All return `{answers:{...probabilities,confidence}, state:{url,inputs}}`, branch with same code:
+```js
+if (safeToFill.probability < 0.75) await humanReview();
+if (readiness.score < 2.5) throw "not ready";
+```
+- **Healing stays generic:** `extract auto` emits stable selectors (`input[name='email']`, `button:has-text("Pay")`) that survive randomization; `choice` can rank multiple selector candidates by probability instead of first-match.
+- **Cost/latency unchanged:** local heuristic ~0ms / remote Jev 70-500ms, `$0.042/MTok in`, adding Qs doesn't increase time (parallel sampler). Record once → `node scripts/scenario.mjs browser-tester/scenarios/any-site-jev.json --report` replays **zero LLM calls**.
+
+**Template to copy for your site:** `browser-tester/scenarios/any-site-jev.json` (selectorshub demo). Replace `launch.url` + `criteria` strings + `fillForm` fields — keep `questions` structure, thresholds, and `wait` for async SPA render.
+
 ### Future Path (if Typesafe access granted)
 1. Pin `jev-latest` → `jev-1.13` (or current stable), log `response.model` per decision.
 2. Build labeled set of OrangeHRM states (login/dashboard/error) + tune thresholds on false-automation vs unnecessary-review.
