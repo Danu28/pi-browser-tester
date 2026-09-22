@@ -1,5 +1,6 @@
 @echo off
-rem Install browser-tester as a GLOBAL pi extension. Copies only the 3 files pi
+rem LEGACY: prefer "pi install git:github.com/Danu28/pi-browser-tester" (cross-platform, managed, auto-updates).
+rem This .bat is kept for manual/offline installs: copies only the 3 files pi
 rem loads: index.ts, package.json, src/session.js (scripts\ and scenarios\ are
 rem dev-only, run from this repo). Re-run after any edit — the old copy is
 rem deleted first so no stale file survives.

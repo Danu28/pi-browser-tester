@@ -13,20 +13,36 @@ All tools are `cext_*` (kept from the extension-testing origin).
 
 ## Install
 
-- Copy the **whole `browser-tester/` folder** (this repo's only source dir) to
-  `~/.pi/agent/extensions/browser-tester/` (global) or
-  `<project>/.pi/extensions/browser-tester/` (project-local; auto-discovery
-  uses `index.ts` — no config needed). Or `pi install` this repo, whose root
-  `package.json` points at `./browser-tester/index.ts`.
-- Or run `install.bat` (Windows) — it copies `browser-tester/` to
-  `%USERPROFILE%\.pi\agent\extensions\browser-tester\`, deleting any previous
-  copy first, so re-run it after every edit.
-- No setup inside the copied folder. `playwright` is an ordinary **global** npm
-  package: `npm install -g playwright` (first `cext_launch` runs it for you if
-  missing). Nothing is installed into the extension folder, so deleting or
-  re-copying it never re-downloads anything.
-- First `cext_launch` downloads Chromium (~170 MB) if missing. `npm run
-  install-browser` does the browser download alone.
+**One-liner (recommended):**
+
+```bash
+pi install git:github.com/Danu28/pi-browser-tester
+```
+
+Then restart `pi` or run `/reload` — `pi` clones to `~/.pi/agent/git/github.com/Danu28/pi-browser-tester`, runs `npm install` (installs `playwright`), and loads `browser-tester/index.ts` (`cext_*` tools). `pi list` shows it, `pi update --extensions` updates it, `pi remove git:github.com/Danu28/pi-browser-tester` removes it. Works on all platforms, including Termux/Linux/macOS.
+
+Pin a version:
+```bash
+pi install git:github.com/Danu28/pi-browser-tester@v0.5.0
+```
+Project-local (shared with team via `.pi/settings.json`):
+```bash
+pi install -l git:github.com/Danu28/pi-browser-tester
+```
+Try without installing (temp for this run):
+```bash
+pi -e git:github.com/Danu28/pi-browser-tester
+```
+
+<details><summary>Alternatives</summary>
+
+- **Manual copy:** copy the **whole `browser-tester/` folder** to `~/.pi/agent/extensions/browser-tester/` (global) or `<project>/.pi/extensions/browser-tester/` (project-local; auto-discovery via `index.ts`).
+- **Windows helper:** `install.bat` copies `browser-tester/` to `%USERPROFILE%\.pi\agent\extensions\browser-tester\` (deletes previous copy; re-run after edits). It warns `[install] STALE` if installed copy is older than source. Legacy — `pi install` is preferred.
+
+</details>
+
+- No extra setup: `playwright` is installed with the package (`dependencies`). If missing (manual copy), first `cext_launch` installs it globally.
+- First `cext_launch` downloads Chromium (~170 MB) if missing. `npm run install-browser` does the browser download alone.
 
 ```
 browser-tester/            ← copy this folder
