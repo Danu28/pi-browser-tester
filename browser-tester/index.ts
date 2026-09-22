@@ -60,6 +60,10 @@ const batchStep = Type.Object({
   aria: Type.Optional(Type.Boolean({ description: "Include pruned aria snapshot in extract" })),
   maxChars: Type.Optional(Type.Integer({ description: "Cap for extract result" })),
   auto: Type.Optional(Type.Boolean({ description: "Auto-discover inventory for any site (no selectors needed)" })),
+  // Jev System One typed questions (state-override uses jevState to avoid clash with wait 'state')
+  questions: Type.Optional(Type.Any({ description: "Jev questions map {id:{type:'choice'|'score'|'noul', criteria}} or shorthand {id: {key:desc}}" })),
+  criteria: Type.Optional(Type.Any({ description: "Criteria for choice ({key:desc})/score ([levels])/noul (statement string)" })),
+  jevState: Type.Optional(Type.Any({ description: "Override state for Jev (string or object); auto-captured from page if omitted" })),
 });
 
 // Result shapes. Most tools return a page snapshot; the rest return plain text.

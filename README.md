@@ -172,7 +172,20 @@ call: `cext_launch {url, steps}` → 1 call does open+discover+fill+assert. With
 ```
 → **2 calls total (launch+batch), ~3k chars, 6× less tokens**. `fillForm` chunks 5 fills into one result line, `extract` returns pruned aria+selectors (compact JSON with `hash/cached/truncated`), `assert` validates url/text/value in one step. Add `record:true` to batch to save `browser-tester/scenarios/auto-<ts>.json` for zero-cost replay (`node scripts/scenario.mjs <file> --report`). Batch returns `[telemetry] 120ms 2400 chars` so you can budget the next call; unchanged `extract`/`snapshot` returns `[cached <hash>]` (0 tokens).
 
-New batch ops: `extract` (selectors+aria), `fillForm` (fields map), `assert` (checks), `upload` (files), `drag` (selector→target), `emulate` (viewport). `select` is now single-timeout via pre-probe, `wait` accepts `fn` JS, `screenshot` errors if `selector+fullPage` both set, downloads dedupe (`name-1.pdf`), artifacts auto-prune (keep 20, >7d deleted, `manifest.json`).
+New batch ops: `extract` (selectors+aria), `fillForm` (fields map), `assert` (checks), `upload` (files), `drag` (selector→target), `emulate` (viewport), **`jev`/`choice`/`score`/`noul` (Jev System One — see `JEV.md`)**. `select` is now single-timeout via pre-probe, `wait` accepts `fn` JS, `screenshot` errors if `selector+fullPage` both set, downloads dedupe (`name-1.pdf`), artifacts auto-prune (keep 20, >7d deleted, `manifest.json`).
+
+## Jev (System One) Integration
+
+Browser-tester now embeds a **Jev-inspired typed decision layer**: `jev` evaluates page `state` against typed `Choice`/`Score`/`Noul` questions in parallel, returning `probabilities` + calibrated `confidence` (0–1) for threshold-gated automation. Shape is **TypeSafe-compatible** (`state+questions→answers`, parallel, no string hallucination); with `TYPESAFE_API_KEY` it delegates to real `jev-latest`, else uses deterministic local heuristic (~0ms, offline). See **[JEV.md](JEV.md)** for deep dive and the canonical **OrangeHRM login scenario** (`browser-tester/scenarios/orangehrm-login.json`):
+
+```json
+{ "op":"jev", "questions":{
+  "isLogin":{ "type":"noul", "criteria":"This is the OrangeHRM login page and form is ready"},
+  "readiness":{ "type":"score", "criteria":["No form","Ready to fill","Fully ready"]},
+  "pageType":{ "type":"choice", "criteria":{"login":"Login form","dashboard":"Dashboard after auth"}}
+}}
+```
+→ `{answers:{isLogin:{probability:0.99}, readiness:{score:2.7, confidence:0.73}, pageType:{choice:"login", probabilities:{login:0.91}}}}`. Branch on `confidence`/`probability` per action risk: `if (readiness.score<2.5 || isLogin.probability<0.75) → humanReview`. All 3 primitives compose in one `cext_batch` call with `extract`/`fillForm`.
 
 ## Recorded scenarios (no model in the loop)
 

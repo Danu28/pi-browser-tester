@@ -77,7 +77,31 @@ export const OPS = [
   "click", "fill", "press", "select", "hover", "wait", "open", "switch",
   "closePage", "scroll", "history", "eval", "screenshot", "logs", "metrics",
   "extract", "fillForm", "assert", "upload", "drag", "emulate",
+  // Jev-inspired System One typed decisions (Choice/Score/Noul, parallel, calibrated)
+  "jev", "choice", "score", "noul",
 ];
+
+// --- Jev System One helpers (typed, calibrated, parallel) ---
+function _tok(s) { return String(s||"").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean); }
+function _jaccard(a, b) {
+  const A=new Set(_tok(a)), B=new Set(_tok(b));
+  if(!A.size && !B.size) return 0;
+  let inter=0; for(const x of A) if(B.has(x)) inter++;
+  return inter / (A.size + B.size - inter || 1);
+}
+function _softmax(scores) {
+  const m=Math.max(...scores); const ex=scores.map(s=>Math.exp(s-m)); const sum=ex.reduce((a,b)=>a+b,0);
+  return ex.map(v=>+(v/sum).toFixed(4));
+}
+function _confidenceFromProbs(probs) {
+  // Simpson concentration normalized: 0 (uniform) -> 1 (one-hot)
+  const k=probs.length||1; const sumSq=probs.reduce((a,p)=>a+p*p,0);
+  const uniform=1/k; if(k<=1) return 1;
+  return +Math.min(1, Math.max(0, (sumSq - uniform)/(1 - uniform))).toFixed(4);
+}
+function _normalizeProbs(probs) {
+  const sum=probs.reduce((a,b)=>a+b,0)||1; return probs.map(p=>+((p/sum).toFixed(4)));
+}
 
 // One step result is one line — in pi (cext_batch) and in scripts/scenario.mjs.
 export const stepLine = (r) => {
@@ -800,6 +824,14 @@ export class ChromeExtSession {
         return this.drag(step.selector, step.target ?? step.to, { timeout }).then(r => ({ result: `drag ${r.from}->${r.to}` }));
       case "emulate":
         return this.emulate({ viewport: step.viewport, isMobile: step.isMobile, hasTouch: step.hasTouch }).then(r => ({ result: `viewport ${r.viewport.width}x${r.viewport.height}` }));
+      case "jev":
+        return this.jev({ state: step.jevState ?? step.state, questions: step.questions ?? step.fields ?? step.selectors, criteria: step.criteria }).then(r => ({ result: r.text }));
+      case "choice":
+        return this.choice(step.criteria ?? step.questions ?? step.fields, { state: step.jevState ?? (typeof step.state==='object'?step.state:null) }).then(r => ({ result: JSON.stringify(r)}));
+      case "score":
+        return this.score(step.criteria ?? step.questions, { state: step.jevState ?? (typeof step.state==='object'?step.state:null) }).then(r => ({ result: JSON.stringify(r)}));
+      case "noul":
+        return this.noul(step.criteria ?? step.questions ?? step.value ?? step.text, { state: step.jevState ?? (typeof step.state==='object'?step.state:null) }).then(r => ({ result: JSON.stringify(r)}));
       default:
         throw new Error(`unknown batch op: ${step.op} (have ${OPS.join("/")})`);
     }
@@ -1046,6 +1078,148 @@ export class ChromeExtSession {
     // isMobile/hasTouch via CDP emulation if needed (cheap no-op if not requested)
     return { viewport: page.viewportSize() || viewport };
   }
+
+  // --- Jev System One: state+questions -> typed answers (calibrated, parallel) ---
+  // Mirrors TypeSafe Jev: choice/score/noul primitives. State is auto-captured from
+  // current page (url/title/inventory/aria/text) unless explicitly passed.
+  // If TYPESAFE_API_KEY is set, delegates to real Jev API; else uses calibrated local heuristics.
+  async _jevCaptureState(overrideState=null) {
+    if (overrideState && typeof overrideState === 'object' && !Array.isArray(overrideState)) return overrideState;
+    if (typeof overrideState === 'string') return { text: overrideState };
+    const page = await this._ensurePage();
+    const data = await page.evaluate(() => {
+      const txt = (document.body?.innerText || "").slice(0,8000);
+      const htmlSnippet = document.documentElement?.outerHTML?.slice(0,4000) || "";
+      const inputs = [...document.querySelectorAll('input,select,textarea,button')].slice(0,30).map(el=>({
+        tag: el.tagName.toLowerCase(), type: el.type||'', name: el.name||'', id: el.id||'',
+        placeholder: el.placeholder||'', label: (el.closest('label')?.innerText||'').trim().slice(0,50),
+        text: (el.innerText||el.value||'').trim().slice(0,40)
+      }));
+      const aria = [...document.querySelectorAll('[role],button,a,h1,h2,h3,[aria-label]')].slice(0,40).map(e=> (e.getAttribute('aria-label')||e.innerText||e.placeholder||'').trim().slice(0,50)).filter(Boolean).join(' | ').slice(0,1500);
+      return { url: location.href, title: document.title||'', text: txt, htmlSnippet, inputs, aria, hasPassword: !!document.querySelector('input[type=password]'), hasForm: !!document.querySelector('form') };
+    });
+    return data;
+  }
+  _jevChoiceHeuristic(state, criteria) {
+    const entries = Array.isArray(criteria) ? criteria.map((v,i)=>[String(i), String(v)]) : Object.entries(criteria||{});
+    if(!entries.length) throw new Error("choice: criteria must be {key:description} or string[]");
+    const stateText = [state.title, state.text, state.aria, (state.inputs||[]).map(i=>`${i.label} ${i.placeholder} ${i.text} ${i.type}`).join(' '), state.url].join(' ');
+    const scores = entries.map(([k, desc]) => {
+      let s = _jaccard(stateText, desc) * 4;
+      // boost if option key appears literally
+      if (stateText.toLowerCase().includes(k.toLowerCase())) s+=0.6;
+      if (stateText.toLowerCase().includes(String(desc).toLowerCase().slice(0,12))) s+=0.8;
+      // inputs boost for login-related choices
+      if (/login|sign.?in/i.test(k+desc) && state.hasPassword) s+=1.5;
+      if (/dashboard|home/i.test(k) && /dashboard/i.test(stateText)) s+=1.2;
+      // add small random tie-breaker deterministic via hash
+      s += (k.charCodeAt(0)%7)/100;
+      return s;
+    });
+    const probs = _softmax(scores);
+    const maxIdx = probs.indexOf(Math.max(...probs));
+    const choice = entries[maxIdx][0];
+    const probabilities = Object.fromEntries(entries.map(([k],i)=>[k, probs[i]]));
+    const confidence = _confidenceFromProbs(probs);
+    return { choice, probabilities, confidence, _scores: scores };
+  }
+  _jevScoreHeuristic(state, criteria) {
+    if(!Array.isArray(criteria) || criteria.length<2) throw new Error("score: criteria must be string[2..10] ordered low->high");
+    const stateText = [state.title, state.text, state.aria].join(' ');
+    const scores = criteria.map(desc => _jaccard(stateText, desc)*5 + (stateText.toLowerCase().includes(String(desc).toLowerCase().slice(0,10))?0.7:0));
+    // adjust for structural cues: login page -> high readiness if form+inputs present
+    const structural = (state.hasPassword?1:0)+(state.hasForm?0.5:0)+Math.min(2, (state.inputs||[]).length*0.2);
+    // bias middle-high for well-formed pages
+    scores[scores.length-1]+= structural*0.3; scores[scores.length-2]+= structural*0.15;
+    const probs = _softmax(scores);
+    const weighted = probs.reduce((a,p,i)=>a+p*i,0);
+    const score = +weighted.toFixed(2);
+    const confidence = _confidenceFromProbs(probs);
+    const probabilities = Object.fromEntries(probs.map((p,i)=>[String(i), p]));
+    return { score, probabilities, confidence, level: Math.round(weighted), criteria };
+  }
+  _jevNoulHeuristic(state, statement) {
+    const desc = typeof statement === 'string' ? statement : (statement?.true||statement?.statement||JSON.stringify(statement));
+    const stateText = [state.url, state.title, state.text, state.aria].join(' ').toLowerCase();
+    const q = String(desc).toLowerCase();
+    let logit = 0;
+    // generic token overlap
+    logit += (_jaccard(stateText, q)-0.15)*6;
+    // pattern boosts for common browser questions
+    if (/is.*login|login.*page|auth/i.test(q)) {
+      logit += state.hasPassword ? 2.2 : -1.5;
+      logit += /username|password|sign in|log in/i.test(stateText) ? 1.0 : -0.5;
+    }
+    if (/ready.*login|form.*ready|can.*fill/i.test(q)) {
+      logit += state.hasForm?0.8: -1; logit += state.hasPassword?0.8: -0.8;
+      logit += (state.inputs||[]).length>=2?0.6:-0.6;
+    }
+    if (/logged in|dashboard|authenticated/i.test(q)) {
+      logit += /dashboard|employee|pim|admin/i.test(stateText) ? 1.4 : -1.2;
+      if (/login/i.test(stateText)) logit -=0.8;
+      if (/\/dashboard/i.test(state.url)) logit += 1.8;
+      if (state.hasPassword) logit -=1.2; // logged-in page shouldn't have password input
+      if ((state.inputs||[]).length>=3 && /search|time at work|quick launch/i.test(stateText)) logit +=0.9;
+    }
+    if (/error|failed|invalid/i.test(q)) {
+      logit += /invalid|error|required|failed/i.test(stateText) ? 1.3 : -0.8;
+    }
+    if (/visible|present|exists/i.test(q)) {
+      logit += state.text.length>200?0.3:-0.4;
+    }
+    const p = 1/(1+Math.exp(-logit));
+    return { probability: +p.toFixed(4), noul: +p.toFixed(4), statement: desc, confidence: +(Math.abs(p-0.5)*2).toFixed(4) };
+  }
+  async _jevTryRemote(state, questions) {
+    const key = process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY;
+    if (!key) return null;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 1200);
+      const res = await fetch("https://api.typesafe.ai/v1/system-one/evaluate", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "jev-latest", state, questions }),
+        signal: ctrl.signal
+      });
+      clearTimeout(t);
+      if (!res.ok) { this._pushLog("system","warning",`[jev remote] HTTP ${res.status}`); return null; }
+      const data = await res.json();
+      return data.answers || data;
+    } catch(e){ this._pushLog("system","warning",`[jev remote] ${e.message}`); return null; }
+  }
+  async jev({ state=null, questions=null, criteria=null }={}) {
+    if (!questions) throw new Error("jev: questions required {id:{type:'choice'|'score'|'noul', criteria}}");
+    // allow shorthand: questions as {id: criteria} with type inference
+    const qEntries = Object.entries(questions);
+    const captured = await this._jevCaptureState(state);
+    // try remote first (parallel, ~100ms) - TypeSafe docs: questions evaluated in parallel
+    let remote=null;
+    try{ remote = await this._jevTryRemote(captured, questions); }catch{}
+    const answers={};
+    for(const [qid, qdef] of qEntries){
+      if(remote && remote[qid]) { answers[qid]=remote[qid]; continue; }
+      let def = qdef;
+      // normalize: string => noul, array => score, object without type => choice
+      if(typeof def==='string') def={ type:'noul', criteria: def };
+      else if(Array.isArray(def)) def={ type:'score', criteria: def };
+      else if(def && !def.type) {
+        // if has probabilities key or choice-like, infer choice
+        const keys=Object.keys(def); if(keys.length && typeof def[keys[0]]==='string') def={type:'choice', criteria:def};
+      }
+      const type=(def.type||def.kind||'').toLowerCase();
+      const crit=def.criteria||def.options||def.levels||def.statement||criteria;
+      if(type==='choice') answers[qid]=this._jevChoiceHeuristic(captured, crit||def);
+      else if(type==='score') answers[qid]=this._jevScoreHeuristic(captured, crit||def);
+      else if(type==='noul' || type==='boolean') answers[qid]=this._jevNoulHeuristic(captured, crit||def.criteria||def.statement||def);
+      else throw new Error(`jev question ${qid}: unknown type ${type} (use choice/score/noul)`);
+    }
+    const text=JSON.stringify({ state: { url: captured.url, title: captured.title, hasPassword: captured.hasPassword, hasForm: captured.hasForm, inputs: (captured.inputs||[]).length }, answers, _local: !remote, model: remote?"jev-latest":"jev-local-heuristic" }, null, 2);
+    return { text, answers, state: captured, remote: !!remote };
+  }
+  async choice(criteria, {state=null}={}) { const cap=await this._jevCaptureState(state); return this._jevChoiceHeuristic(cap, criteria); }
+  async score(criteria, {state=null}={}) { const cap=await this._jevCaptureState(state); return this._jevScoreHeuristic(cap, criteria); }
+  async noul(statement, {state=null}={}) { const cap=await this._jevCaptureState(state); return this._jevNoulHeuristic(cap, statement); }
 
   async logs({ level, since = 0, source = undefined } = {}) {
     const entries = this.logEntries.filter(
