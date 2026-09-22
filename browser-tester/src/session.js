@@ -617,7 +617,7 @@ export class ChromeExtSession {
       const loc = page.locator(sel).first();
       try { await loc.waitFor({ state: "attached", timeout: Math.min(timeout, 800)}); return loc; } catch { return null; }
     };
-    // fast-path for floating-ui random ids: heal to stable aria-controls (generic for any site using floating-ui/radix)
+    // heal random overlay ids via stable aria-controls (generic for any disclosure/overlay)
     if (/floating-ui/i.test(selector)) {
       try {
         const stable = await page.evaluate((sel) => {
@@ -626,14 +626,9 @@ export class ChromeExtSession {
             const ctrl = el.getAttribute('aria-controls') || el.getAttribute('aria-labelledby') || '';
             if (ctrl) return `button[aria-controls="${ctrl}"]`;
           }
-          // reverse: find button that controls this panel
           const id = sel.replace(/^#/, '');
           const btn = document.querySelector(`button[aria-controls="${id}"]`);
           if (btn) return `button[aria-controls="${id}"]`;
-          // fallback: nth accordion by floating-ui order
-          const acc = [...document.querySelectorAll('button[aria-controls^="item-"]')];
-          const idx = [...document.querySelectorAll('[id^="floating-ui"]')].findIndex(e=>`#${e.id}`===sel);
-          if (idx>=0 && acc[idx]) return `button[aria-controls="${acc[idx].getAttribute('aria-controls')}"]`;
           return null;
         }, selector);
         if (stable) {
@@ -702,7 +697,7 @@ export class ChromeExtSession {
       const { loc, healed, healedFrom, healedTo } = await this._healLocator(page, selector, timeout);
       await loc.click({ timeout });
       if (healed) this._pushLog("system","info",`[heal] click ${healedFrom} → ${healedTo||'text fallback'}`);
-      // generic accordion post-wait: if clicked button controls a panel, wait for panel content (works for any FAQ/tab)
+      // generic disclosure post-wait: if button controls a panel, wait for content
       try {
         const ctrl = await loc.evaluate(el => el.getAttribute('aria-controls')||'').catch(()=> '');
         if (ctrl) {
@@ -713,7 +708,6 @@ export class ChromeExtSession {
             return txt.length > 30;
           }, ctrl, {timeout: 2200}).catch(()=>{});
         } else {
-          // details/summary pattern
           const isDetails = await loc.evaluate(el => !!el.closest('details')).catch(()=>false);
           if (isDetails) await page.waitForTimeout(420).catch(()=>{});
         }
@@ -982,20 +976,20 @@ export class ChromeExtSession {
     return { data: inline ? buf.toString("base64") : null, path: dest };
   }
 
-  // --- new brain-efficient ops (T2/T5/T9) + generic smart-extract (hydration/scroll/accordion) ---
+  // --- new brain-efficient ops (T2/T5/T9) + generic smart-extract (hydration/scroll/disclosure) ---
   async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null, auto = false, expand = null } = {}) {
     const page = await this._ensurePage();
     const map = selectors || fields || (selector ? { value: selector } : null);
     // auto-discover for any site when no selectors given — single-call inventory (generic)
     const doAuto = auto || (!map && !aria && expand == null);
-    // Generic 2-call optimization: hydration-wait + auto-scroll lazy-load for any SPA/FAQ site
+    // Generic hydration-wait + auto-scroll for any SPA/lazy-loaded site
     if (doAuto) {
       try {
         await page.waitForFunction(() => {
           const hasContent = document.body && document.body.innerText && document.body.innerText.trim().length > 200;
           const hasInputs = document.querySelectorAll('input,button,a').length > 3;
-          const hasAccordion = document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary,[class*="accordion"],[id^="item-"]').length > 0;
-          return hasContent || hasInputs || hasAccordion;
+          const hasDisclosure = document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary').length > 0;
+          return hasContent || hasInputs || hasDisclosure;
         }, null, { timeout: 4000 }).catch(()=>{});
       } catch {}
       try {
@@ -1009,7 +1003,7 @@ export class ChromeExtSession {
         await page.waitForLoadState('domcontentloaded', {timeout: 1500}).catch(()=>{});
       } catch {}
     }
-    // expand-nth-accordion in SAME call: click + wait for panel visible (saves 1 LLM round-trip for any FAQ/tab)
+    // expand-nth disclosure in same call: click + wait for panel visible (generic toggle)
     if (expand != null) {
       try {
         const expSel = typeof expand === 'number'
@@ -1094,12 +1088,8 @@ export class ChromeExtSession {
         try {
           const accBtns = [...document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary')];
           const seen = new Set();
-          out.accordions = accBtns.slice(0, 40).map((btn, idx) => {
+          out.disclosures = accBtns.slice(0, 40).map((btn, idx) => {
             let q = (btn.innerText || btn.textContent || btn.getAttribute('aria-label') || '').trim().split('\n')[0].slice(0, 220).trim();
-            if (!q) {
-              const inner = btn.querySelector('[class*="sc-"]');
-              if (inner) q = (inner.innerText||inner.textContent||'').trim().slice(0,220);
-            }
             if (!q || seen.has(q)) return null;
             seen.add(q);
             const expanded = btn.getAttribute('aria-expanded') === 'true' || (btn.closest('details')?.open) || false;
@@ -1120,6 +1110,8 @@ export class ChromeExtSession {
           }).filter(Boolean);
           const tabs = [...document.querySelectorAll('[role="tab"]')].slice(0,20);
           if (tabs.length) out.tabs = tabs.map(t=>({ text: (t.innerText||t.textContent||'').trim().slice(0,80), selected: t.getAttribute('aria-selected')==='true' }));
+          // alias for backward-compat generic tools
+          if (out.disclosures) out.accordions = out.disclosures;
         } catch {}
       }
       return out;
@@ -1232,13 +1224,8 @@ export class ChromeExtSession {
     const stateText = [state.title, state.text, state.aria, state.acc||'', (state.inputs||[]).map(i=>`${i.label} ${i.placeholder} ${i.text} ${i.type}`).join(' '), state.url].join(' ');
     const scores = entries.map(([k, desc]) => {
       let s = _jaccard(stateText, desc) * 4;
-      // boost if option key appears literally
       if (stateText.toLowerCase().includes(k.toLowerCase())) s+=0.6;
       if (stateText.toLowerCase().includes(String(desc).toLowerCase().slice(0,12))) s+=0.8;
-      // inputs boost for login-related choices
-      if (/login|sign.?in/i.test(k+desc) && state.hasPassword) s+=1.5;
-      if (/dashboard|home/i.test(k) && /dashboard/i.test(stateText)) s+=1.2;
-      // add small random tie-breaker deterministic via hash
       s += (k.charCodeAt(0)%7)/100;
       return s;
     });
@@ -1253,10 +1240,8 @@ export class ChromeExtSession {
     if(!Array.isArray(criteria) || criteria.length<2) throw new Error("score: criteria must be string[2..10] ordered low->high");
     const stateText = [state.title, state.text, state.aria, state.acc||''].join(' ');
     const scores = criteria.map(desc => _jaccard(stateText, desc)*5 + (stateText.toLowerCase().includes(String(desc).toLowerCase().slice(0,10))?0.7:0));
-    // adjust for structural cues: login page -> high readiness if form+inputs present
-    const structural = (state.hasPassword?1:0)+(state.hasForm?0.5:0)+Math.min(2, (state.inputs||[]).length*0.2);
-    // bias middle-high for well-formed pages
-    scores[scores.length-1]+= structural*0.3; scores[scores.length-2]+= structural*0.15;
+    const structural = Math.min(1.5, (state.inputs||[]).length*0.12);
+    scores[scores.length-1]+= structural*0.18; scores[scores.length-2]+= structural*0.08;
     const probs = _softmax(scores);
     const weighted = probs.reduce((a,p,i)=>a+p*i,0);
     const score = +weighted.toFixed(2);
@@ -1269,34 +1254,13 @@ export class ChromeExtSession {
     const stateText = [state.url, state.title, state.text, state.aria, state.acc||''].join(' ').toLowerCase();
     const q = String(desc).toLowerCase();
     let logit = 0;
-    // generic token overlap
     logit += (_jaccard(stateText, q)-0.15)*6;
-    // pattern boosts for common browser questions
-    if (/is.*login|login.*page|auth/i.test(q)) {
-      logit += state.hasPassword ? 2.2 : -1.5;
-      logit += /username|password|sign in|log in/i.test(stateText) ? 1.0 : -0.5;
-    }
-    if (/ready.*login|form.*ready|can.*fill/i.test(q)) {
-      logit += state.hasForm?0.8: -1; logit += state.hasPassword?0.8: -0.8;
-      logit += (state.inputs||[]).length>=2?0.6:-0.6;
-    }
-    if (/logged in|dashboard|authenticated/i.test(q)) {
-      logit += /dashboard|employee|pim|admin/i.test(stateText) ? 1.4 : -1.2;
-      if (/login/i.test(stateText)) logit -=0.8;
-      if (/\/dashboard/i.test(state.url)) logit += 1.8;
-      if (state.hasPassword) logit -=1.2; // logged-in page shouldn't have password input
-      if ((state.inputs||[]).length>=3 && /search|time at work|quick launch/i.test(stateText)) logit +=0.9;
+    if (/visible|present|exists|expanded/i.test(q)) {
+      logit += state.text.length>200?0.3:-0.4;
+      if (state.acc) logit += 0.3;
     }
     if (/error|failed|invalid/i.test(q)) {
       logit += /invalid|error|required|failed/i.test(stateText) ? 1.3 : -0.8;
-    }
-    if (/visible|present|exists/i.test(q)) {
-      logit += state.text.length>200?0.3:-0.4;
-    }
-    if (/faq|accordion|expanded|answer.*visible/i.test(q)) {
-      logit += /frequently asked/i.test(stateText) ? 0.7 : 0;
-      logit += state.acc ? 0.5 : -0.4;
-      logit += /expanded.*true|answer.*present/i.test(stateText) ? 0.4 : 0;
     }
     const p = 1/(1+Math.exp(-logit));
     return { probability: +p.toFixed(4), noul: +p.toFixed(4), statement: desc, confidence: +(Math.abs(p-0.5)*2).toFixed(4) };
