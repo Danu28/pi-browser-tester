@@ -60,6 +60,7 @@ const batchStep = Type.Object({
   aria: Type.Optional(Type.Boolean({ description: "Include pruned aria snapshot in extract" })),
   maxChars: Type.Optional(Type.Integer({ description: "Cap for extract result" })),
   auto: Type.Optional(Type.Boolean({ description: "Auto-discover inventory for any site (no selectors needed)" })),
+  expand: Type.Optional(Type.Any({ description: "For extract: click nth accordion/tab before capture (number 0-based index or selector string) — 1-call FAQ expand+read, saves LLM round-trip" })),
   // Jev System One typed questions (state-override uses jevState to avoid clash with wait 'state')
   questions: Type.Optional(Type.Any({ description: "Jev questions map {id:{type:'choice'|'score'|'noul', criteria}} or shorthand {id: {key:desc}}" })),
   criteria: Type.Optional(Type.Any({ description: "Criteria for choice ({key:desc})/score ([levels])/noul (statement string)" })),
@@ -106,7 +107,7 @@ const tools: {
     promptSnippet: "Launch a browser, optionally with an extension",
     promptGuidelines: [
       "Use cext_launch before any other cext_* tool. Call it again after edits — it tears down and relaunches fresh.",
-      "Website testing: omit extensionPath and drive pages with cext_batch. For minimum LLM calls on any site, pass steps in launch: {url, steps:[{op:'extract',auto:true},{op:'fillForm',fields:{...}},{op:'assert',checks:[...]}]} — 1 call instead of launch+batch (2).",
+      "Website testing: omit extensionPath and drive pages with cext_batch. For minimum LLM calls on any site, pass steps in launch: {url, steps:[{op:'extract',auto:true},{op:'fillForm',fields:{...}},{op:'assert',checks:[...]}]} — 1 call instead of launch+batch (2). For FAQ/accordion tasks: launch{url, steps:[{op:'extract',auto:true}]} → batch[{op:'extract',expand:3}] gives 4th FAQ Q&A in 2 calls (auto-scroll+hydration+accordion discovery in first extract, expand+read in second).",
       "Extension testing: pass path to unpacked extension folder (with manifest.json), e.g. './sample-extension', then use cext_popup / cext_reload and cext_serve.",
     ],
     parameters: Type.Object({
@@ -244,9 +245,9 @@ const tools: {
     promptGuidelines: [
       "cext_batch is the action surface: click/fill/press/select/hover/wait/scroll/history/open/switch/closePage/eval/screenshot/logs/metrics are steps in it, not tools of their own.",
       "Brain-efficient cheapest pattern: {op:'fillForm', fields:{'#a':'v'}} + {op:'extract', selectors:{email:'#e'}, aria:true} + {op:'assert', checks:[{selector:'#x',value:'y'},{url:'endsWith:?'}]} in ONE batch — 1 call vs 3, 6× fewer tokens than raw innerText/eval loops.",
-      "Use extract over eval+innerHTML.slice and fillForm over N fills; both return compact JSON with truncated/hash/cached so unchanged DOM costs 0 tokens.",
+      "Use extract over eval+innerHTML.slice and fillForm over N fills; both return compact JSON with truncated/hash/cached so unchanged DOM costs 0 tokens. extract auto:true now auto-waits hydration + scrolls for lazy content + discovers accordions:[{index,question,button,answerPreview}] — use it first for any site, then {op:'extract',expand:3} to open nth FAQ in same call (2-call FAQ floor).",
       "Pass snapshot:true only when you need raw bodyText; prefer extract (pruned aria+selectors) — snapshot marks truncated/cached.",
-      "Steps run in order; stopOnError:true stops at first failure and reports stoppedAt; each step returns ms/chars and batch returns telemetry {totalMs,totalChars}.",
+      "Steps run in order; stopOnError:true stops at first failure and reports stoppedAt; each step returns ms/chars and batch returns telemetry {totalMs,totalChars}. For accordion/FAQ: jev {choice: pick FAQ, noul: isExpanded} + extract{expand} beats click+wait+eval loops (generic, works on floating-ui/radix/shub).",
     ],
     parameters: Type.Object({
       steps: Type.Array(batchStep, { description: "Steps to run, in order" }),

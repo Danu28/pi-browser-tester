@@ -617,6 +617,31 @@ export class ChromeExtSession {
       const loc = page.locator(sel).first();
       try { await loc.waitFor({ state: "attached", timeout: Math.min(timeout, 800)}); return loc; } catch { return null; }
     };
+    // fast-path for floating-ui random ids: heal to stable aria-controls (generic for any site using floating-ui/radix)
+    if (/floating-ui/i.test(selector)) {
+      try {
+        const stable = await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (el) {
+            const ctrl = el.getAttribute('aria-controls') || el.getAttribute('aria-labelledby') || '';
+            if (ctrl) return `button[aria-controls="${ctrl}"]`;
+          }
+          // reverse: find button that controls this panel
+          const id = sel.replace(/^#/, '');
+          const btn = document.querySelector(`button[aria-controls="${id}"]`);
+          if (btn) return `button[aria-controls="${id}"]`;
+          // fallback: nth accordion by floating-ui order
+          const acc = [...document.querySelectorAll('button[aria-controls^="item-"]')];
+          const idx = [...document.querySelectorAll('[id^="floating-ui"]')].findIndex(e=>`#${e.id}`===sel);
+          if (idx>=0 && acc[idx]) return `button[aria-controls="${acc[idx].getAttribute('aria-controls')}"]`;
+          return null;
+        }, selector);
+        if (stable) {
+          const hloc = await tryLoc(stable);
+          if (hloc) return { loc: hloc, healed: true, healedFrom: selector, healedTo: stable };
+        }
+      } catch {}
+    }
     let loc = await tryLoc(selector);
     if (loc) return { loc, healed: false };
     // attribute-stable heal for any site: if selector is random id (digits, shub*, ember*, react-*), find stable alt via name/placeholder/type/label
@@ -674,9 +699,25 @@ export class ChromeExtSession {
   async click(selector, { index = 0, timeout = 5000 } = {}) {
     return this._act(async (page) => {
       if (index > 0) return page.locator(selector).nth(index).click({ timeout });
-      const { loc, healed, healedFrom } = await this._healLocator(page, selector, timeout);
+      const { loc, healed, healedFrom, healedTo } = await this._healLocator(page, selector, timeout);
       await loc.click({ timeout });
-      if (healed) this._pushLog("system","info",`[heal] click ${healedFrom} → text fallback`);
+      if (healed) this._pushLog("system","info",`[heal] click ${healedFrom} → ${healedTo||'text fallback'}`);
+      // generic accordion post-wait: if clicked button controls a panel, wait for panel content (works for any FAQ/tab)
+      try {
+        const ctrl = await loc.evaluate(el => el.getAttribute('aria-controls')||'').catch(()=> '');
+        if (ctrl) {
+          await page.waitForFunction((id) => {
+            const p = document.getElementById(id);
+            if (!p) return false;
+            const txt = (p.innerText||p.textContent||'').trim();
+            return txt.length > 30;
+          }, ctrl, {timeout: 2200}).catch(()=>{});
+        } else {
+          // details/summary pattern
+          const isDetails = await loc.evaluate(el => !!el.closest('details')).catch(()=>false);
+          if (isDetails) await page.waitForTimeout(420).catch(()=>{});
+        }
+      } catch {}
     });
   }
 
@@ -813,7 +854,7 @@ export class ChromeExtSession {
           result: `dcl ${m.domContentLoaded}ms / load ${m.load}ms / ${(m.bytes / 1024).toFixed(1)} KB / ${m.resources} resources${m.navigated===false?" (no navigation yet)":""}`,
         }));
       case "extract":
-        return this.extract({ selectors: step.selectors, fields: step.fields, aria: step.aria, maxChars: step.maxChars, selector: step.selector, auto: step.auto }).then(r => ({ result: r.text }));
+        return this.extract({ selectors: step.selectors, fields: step.fields, aria: step.aria, maxChars: step.maxChars, selector: step.selector, auto: step.auto, expand: step.expand }).then(r => ({ result: r.text }));
       case "fillForm":
         return this.fillForm(step.fields ?? step.selectors, { timeout }).then(r => ({ result: `filled ${r.count}: ${r.keys.join(",")}` }));
       case "assert":
@@ -941,13 +982,65 @@ export class ChromeExtSession {
     return { data: inline ? buf.toString("base64") : null, path: dest };
   }
 
-  // --- new brain-efficient ops (T2/T5/T9) ---
-  async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null, auto = false } = {}) {
+  // --- new brain-efficient ops (T2/T5/T9) + generic smart-extract (hydration/scroll/accordion) ---
+  async extract({ selectors = null, fields = null, aria = false, maxChars = MAX_TEXT, selector = null, auto = false, expand = null } = {}) {
     const page = await this._ensurePage();
     const map = selectors || fields || (selector ? { value: selector } : null);
     // auto-discover for any site when no selectors given — single-call inventory (generic)
-    const doAuto = auto || (!map && !aria);
-    const raw = await page.evaluate(({ map, aria, doAuto }) => {
+    const doAuto = auto || (!map && !aria && expand == null);
+    // Generic 2-call optimization: hydration-wait + auto-scroll lazy-load for any SPA/FAQ site
+    if (doAuto) {
+      try {
+        await page.waitForFunction(() => {
+          const hasContent = document.body && document.body.innerText && document.body.innerText.trim().length > 200;
+          const hasInputs = document.querySelectorAll('input,button,a').length > 3;
+          const hasAccordion = document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary,[class*="accordion"],[id^="item-"]').length > 0;
+          return hasContent || hasInputs || hasAccordion;
+        }, null, { timeout: 4000 }).catch(()=>{});
+      } catch {}
+      try {
+        await page.evaluate(async () => {
+          const dy = 900;
+          const steps = Math.min(6, Math.ceil(document.body.scrollHeight / dy));
+          for (let i=0;i<steps;i++){ window.scrollBy(0, dy); await new Promise(r=>setTimeout(r, 110)); }
+          window.scrollTo(0, 0);
+          await new Promise(r=>setTimeout(r, 170));
+        });
+        await page.waitForLoadState('domcontentloaded', {timeout: 1500}).catch(()=>{});
+      } catch {}
+    }
+    // expand-nth-accordion in SAME call: click + wait for panel visible (saves 1 LLM round-trip for any FAQ/tab)
+    if (expand != null) {
+      try {
+        const expSel = typeof expand === 'number'
+          ? `expand-index:${expand}`
+          : String(expand);
+        if (typeof expand === 'number') {
+          const clicked = await page.evaluate((idx) => {
+            const btns = [...document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary')];
+            const btn = btns[idx];
+            if (!btn) return null;
+            btn.scrollIntoView({block:'center'});
+            btn.click();
+            return { q: (btn.innerText||btn.textContent||'').trim().slice(0,120), controls: btn.getAttribute('aria-controls')||'' };
+          }, expand);
+          if (clicked && clicked.controls) {
+            await page.waitForFunction((id) => {
+              const p = document.getElementById(id);
+              if (!p) return false;
+              const txt = (p.innerText||p.textContent||'').trim();
+              return txt.length > 30;
+            }, clicked.controls, {timeout: 2000}).catch(()=>{});
+          } else {
+            await page.waitForTimeout(650).catch(()=>{});
+          }
+        } else if (expSel) {
+          const { loc } = await this._healLocator(page, expSel, 3000).catch(()=>({loc:null}));
+          if (loc) { await loc.click({timeout: 3000}).catch(()=>{}); await page.waitForTimeout(600).catch(()=>{}); }
+        }
+      } catch {}
+    }
+    const raw = await page.evaluate(({ map, aria, doAuto, expand }) => {
       const out = {};
       const stableSel = (el) => {
         const name = el.getAttribute('name');
@@ -989,7 +1082,7 @@ export class ChromeExtSession {
           fields: [...f.querySelectorAll('input,select,textarea')].length
         }));
       }
-      if (aria || doAuto) {
+      if (aria || doAuto || expand != null) {
         const els = [...document.querySelectorAll('[role],button,a,input,select,textarea,h1,h2,h3,[aria-label]')].slice(0, 60);
         out._aria = els.map(e => {
           const role = e.getAttribute('role') || e.tagName.toLowerCase();
@@ -997,8 +1090,40 @@ export class ChromeExtSession {
           return name ? `${role} '${name}'` : role;
         }).join(" | ").slice(0, 2000);
       }
+      if (doAuto || expand != null) {
+        try {
+          const accBtns = [...document.querySelectorAll('button[aria-expanded],button[aria-controls],[role="button"][aria-expanded],details>summary')];
+          const seen = new Set();
+          out.accordions = accBtns.slice(0, 40).map((btn, idx) => {
+            let q = (btn.innerText || btn.textContent || btn.getAttribute('aria-label') || '').trim().split('\n')[0].slice(0, 220).trim();
+            if (!q) {
+              const inner = btn.querySelector('[class*="sc-"]');
+              if (inner) q = (inner.innerText||inner.textContent||'').trim().slice(0,220);
+            }
+            if (!q || seen.has(q)) return null;
+            seen.add(q);
+            const expanded = btn.getAttribute('aria-expanded') === 'true' || (btn.closest('details')?.open) || false;
+            const controls = btn.getAttribute('aria-controls') || '';
+            let panelText = '';
+            if (controls) {
+              const panel = document.getElementById(controls);
+              if (panel) panelText = (panel.innerText || panel.textContent || '').trim().slice(0, 2800);
+            } else {
+              const d = btn.closest('details');
+              if (d) panelText = (d.innerText || '').replace(q,'').trim().slice(0, 2800);
+            }
+            let sel = '';
+            if (controls) sel = `button[aria-controls="${controls}"]`;
+            else if (btn.id && !/floating-ui|radix|chakra|ember|shub|react/i.test(btn.id)) sel = `#${CSS.escape(btn.id)}`;
+            else sel = `acc-${idx}`;
+            return { index: idx, question: q, expanded, button: sel, controls, panel: controls ? `#${controls}` : null, answer: panelText, answerPreview: panelText.slice(0, 340) };
+          }).filter(Boolean);
+          const tabs = [...document.querySelectorAll('[role="tab"]')].slice(0,20);
+          if (tabs.length) out.tabs = tabs.map(t=>({ text: (t.innerText||t.textContent||'').trim().slice(0,80), selected: t.getAttribute('aria-selected')==='true' }));
+        } catch {}
+      }
       return out;
-    }, { map, aria, doAuto });
+    }, { map, aria, doAuto, expand });
     let text = JSON.stringify(raw);
     const cap = Math.min(maxChars || MAX_TEXT, MAX_TEXT);
     if (text.length > cap) {
@@ -1096,14 +1221,15 @@ export class ChromeExtSession {
         text: (el.innerText||el.value||'').trim().slice(0,40)
       }));
       const aria = [...document.querySelectorAll('[role],button,a,h1,h2,h3,[aria-label]')].slice(0,40).map(e=> (e.getAttribute('aria-label')||e.innerText||e.placeholder||'').trim().slice(0,50)).filter(Boolean).join(' | ').slice(0,1500);
-      return { url: location.href, title: document.title||'', text: txt, htmlSnippet, inputs, aria, hasPassword: !!document.querySelector('input[type=password]'), hasForm: !!document.querySelector('form') };
+      const acc = [...document.querySelectorAll('button[aria-expanded],button[aria-controls]')].slice(0,12).map(b=> (b.innerText||b.textContent||'').trim().slice(0,80)).join(' | ');
+      return { url: location.href, title: document.title||'', text: txt, htmlSnippet, inputs, aria, acc, hasPassword: !!document.querySelector('input[type=password]'), hasForm: !!document.querySelector('form') };
     });
     return data;
   }
   _jevChoiceHeuristic(state, criteria) {
     const entries = Array.isArray(criteria) ? criteria.map((v,i)=>[String(i), String(v)]) : Object.entries(criteria||{});
     if(!entries.length) throw new Error("choice: criteria must be {key:description} or string[]");
-    const stateText = [state.title, state.text, state.aria, (state.inputs||[]).map(i=>`${i.label} ${i.placeholder} ${i.text} ${i.type}`).join(' '), state.url].join(' ');
+    const stateText = [state.title, state.text, state.aria, state.acc||'', (state.inputs||[]).map(i=>`${i.label} ${i.placeholder} ${i.text} ${i.type}`).join(' '), state.url].join(' ');
     const scores = entries.map(([k, desc]) => {
       let s = _jaccard(stateText, desc) * 4;
       // boost if option key appears literally
@@ -1125,7 +1251,7 @@ export class ChromeExtSession {
   }
   _jevScoreHeuristic(state, criteria) {
     if(!Array.isArray(criteria) || criteria.length<2) throw new Error("score: criteria must be string[2..10] ordered low->high");
-    const stateText = [state.title, state.text, state.aria].join(' ');
+    const stateText = [state.title, state.text, state.aria, state.acc||''].join(' ');
     const scores = criteria.map(desc => _jaccard(stateText, desc)*5 + (stateText.toLowerCase().includes(String(desc).toLowerCase().slice(0,10))?0.7:0));
     // adjust for structural cues: login page -> high readiness if form+inputs present
     const structural = (state.hasPassword?1:0)+(state.hasForm?0.5:0)+Math.min(2, (state.inputs||[]).length*0.2);
@@ -1140,7 +1266,7 @@ export class ChromeExtSession {
   }
   _jevNoulHeuristic(state, statement) {
     const desc = typeof statement === 'string' ? statement : (statement?.true||statement?.statement||JSON.stringify(statement));
-    const stateText = [state.url, state.title, state.text, state.aria].join(' ').toLowerCase();
+    const stateText = [state.url, state.title, state.text, state.aria, state.acc||''].join(' ').toLowerCase();
     const q = String(desc).toLowerCase();
     let logit = 0;
     // generic token overlap
@@ -1166,6 +1292,11 @@ export class ChromeExtSession {
     }
     if (/visible|present|exists/i.test(q)) {
       logit += state.text.length>200?0.3:-0.4;
+    }
+    if (/faq|accordion|expanded|answer.*visible/i.test(q)) {
+      logit += /frequently asked/i.test(stateText) ? 0.7 : 0;
+      logit += state.acc ? 0.5 : -0.4;
+      logit += /expanded.*true|answer.*present/i.test(stateText) ? 0.4 : 0;
     }
     const p = 1/(1+Math.exp(-logit));
     return { probability: +p.toFixed(4), noul: +p.toFixed(4), statement: desc, confidence: +(Math.abs(p-0.5)*2).toFixed(4) };

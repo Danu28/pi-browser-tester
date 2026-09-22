@@ -1,0 +1,22 @@
+{
+  "note": "HP Instant Ink FAQ 4th question — 2-call generic pattern. Run: node browser-tester/scripts/scenario.mjs browser-tester/scenarios/hp-faq-2call.json --report",
+  "launch": { "url": "https://instantink.hpconnected.com/us/en/l/v2" },
+  "steps": [
+    { "op": "extract", "auto": true },
+    {
+      "op": "jev",
+      "questions": {
+        "faqState": { "type": "choice", "criteria": { "faqReady": "FAQ accordion with 4+ questions visible (Frequently asked questions)", "noFaq": "No FAQ section visible yet — need scroll/wait", "error": "Error or empty page" } },
+        "fourthFaq": { "type": "noul", "criteria": "The 4th FAQ accordion question is present and answer can be revealed by clicking its button" },
+        "ready": { "type": "score", "criteria": ["No FAQ loaded", "FAQ heading visible but accordions not yet rendered", "Accordions rendered but collapsed", "Accordions ready — 4th can be expanded"] }
+      }
+    },
+    { "op": "extract", "expand": 3 },
+    {
+      "op": "jev",
+      "questions": {
+        "expanded": { "type": "noul", "criteria": "4th FAQ answer is now visible and contains more than 30 characters" }
+      }
+    }
+  ]
+}
