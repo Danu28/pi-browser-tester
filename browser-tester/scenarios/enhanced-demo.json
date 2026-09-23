@@ -1,0 +1,14 @@
+{
+  "launch": { "url": "https://example.com" },
+  "steps": [
+    { "op": "trace", "action": "start" },
+    { "op": "extract", "auto": true },
+    { "op": "route", "pattern": "**/api/**", "mock": { "ok": true, "mocked": true } },
+    { "op": "storage", "action": "set", "key": "demo", "value": "hello", "type": "local" },
+    { "op": "storage", "action": "get", "type": "local" },
+    { "op": "a11y" },
+    { "op": "eval", "expression": "localStorage.getItem('demo')" },
+    { "op": "trace", "action": "stop" },
+    { "op": "assert", "checks": [{ "text": "Example Domain" }] }
+  ]
+}

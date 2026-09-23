@@ -79,6 +79,8 @@ export const OPS = [
   "extract", "fillForm", "assert", "upload", "drag", "emulate",
   // Jev-inspired System One typed decisions (Choice/Score/Noul, parallel, calibrated)
   "jev", "choice", "score", "noul",
+  // H0/H1 enhancements — batch-only, no new tool (keep 10-tool budget)
+  "trace", "storage", "route", "a11y",
 ];
 
 // --- Jev System One helpers (typed, calibrated, parallel) ---
@@ -198,6 +200,7 @@ export class ChromeExtSession {
     this._lastSnapshotHash = null;
     this._lastSnapshotText = null;
     this._dialogPolicy = "dismiss"; // auto-dismiss dialogs to prevent hangs
+    this._evictionWarned = false;
   }
 
   _pushLog(source, level, text) {
@@ -205,8 +208,13 @@ export class ChromeExtSession {
     if (this.logEntries.length > 5000) {
       const dropped = this.logEntries.length - 5000;
       this.logEntries.splice(0, dropped);
-      // ponytail: notify once when eviction happens so early evidence loss is visible
-      if (dropped > 0) this.logEntries.unshift({ i: -1, ts: Date.now(), source: "system", level: "warning", text: `[log] ${dropped} oldest entries evicted (cap 5000)` });
+      // AHE: dedupe eviction warning — once per overflow burst, not per push (prevents log spam)
+      if (dropped > 0 && !this._evictionWarned) {
+        this.logEntries.unshift({ i: -1, ts: Date.now(), source: "system", level: "warning", text: `[log] ${dropped} oldest entries evicted (cap 5000)` });
+        this._evictionWarned = true;
+      }
+    } else if (this.logEntries.length < 4900) {
+      this._evictionWarned = false;
     }
   }
 
@@ -639,37 +647,56 @@ export class ChromeExtSession {
     }
     let loc = await tryLoc(selector);
     if (loc) return { loc, healed: false };
-    // attribute-stable heal for any site: if selector is random id (digits, shub*, ember*, react-*), find stable alt via name/placeholder/type/label
+    // attribute-stable heal for any site: Jev-ranked candidate selection (confidence-gated)
     try {
       const healedSel = await page.evaluate((sel) => {
         const isRandom = (s) => /^#?(shub|ember|react|mui|radix|chakra)\d+/i.test(s) || /^#[a-z]+\d{2,}$/i.test(s) || /\d{3,}/.test(s);
         if (!isRandom(sel)) return null;
-        // try to find element that primary would have matched before id randomization: scan inputs
         const cands = [...document.querySelectorAll('input,select,textarea,button')];
-        // prefer stable attributes: name, placeholder, type, aria-label, label text
+        const pool = [];
         for (const el of cands) {
-          const stable = el.getAttribute('name') || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
-          if (stable) {
-            const trySel = `${el.tagName.toLowerCase()}[name='${stable}']`;
-            if (document.querySelector(trySel)) return trySel;
-          }
+          const name = el.getAttribute('name');
+          if (name) { const s = `${el.tagName.toLowerCase()}[name='${name}']`; if (document.querySelector(s)) pool.push(s); }
+          const ph = el.getAttribute('placeholder');
+          if (ph) { const s = `${el.tagName.toLowerCase()}[placeholder='${ph}']`; if (document.querySelector(s)) pool.push(s); }
+          const al = el.getAttribute('aria-label');
+          if (al) { const s = `${el.tagName.toLowerCase()}[aria-label='${al}']`; if (document.querySelector(s)) pool.push(s); }
           if (el.type) {
             const tsel = `${el.tagName.toLowerCase()}[type='${el.type}']`;
-            const matches = document.querySelectorAll(tsel);
-            if (matches.length === 1) return tsel;
-            // if multiple, narrow by placeholder
-            const ph = el.placeholder;
-            if (ph) {
-              const psel = `${el.tagName.toLowerCase()}[placeholder='${ph}']`;
-              if (document.querySelector(psel)) return psel;
-            }
+            if (document.querySelectorAll(tsel).length === 1) pool.push(tsel);
           }
         }
-        return null;
+        return [...new Set(pool)].slice(0,8);
       }, selector);
-      if (healedSel) {
-        const hloc = await tryLoc(healedSel);
-        if (hloc) return { loc: hloc, healed: true, healedFrom: selector, healedTo: healedSel };
+      const pool = Array.isArray(healedSel) ? healedSel : (typeof healedSel === 'string' ? [healedSel] : []);
+      if (pool.length) {
+        // Jev-style ranking: score each candidate by Jaccard vs original selector + structural signal
+        const scores = pool.map(s => {
+          // simple lexical overlap + structural boost: shorter stable selectors preferred
+          const a = selector.toLowerCase(), b = s.toLowerCase();
+          const toks = a.split(/[^a-z0-9]+/).filter(Boolean);
+          const hit = toks.filter(t => b.includes(t)).length;
+          let sc = hit * 1.2 - s.length * 0.01;
+          if (s.includes('[name=')) sc += 0.6;
+          if (s.includes('[placeholder=')) sc += 0.4;
+          return sc;
+        });
+        const m = Math.max(...scores); const ex = scores.map(s=>Math.exp(s-m)); const sum=ex.reduce((a,b)=>a+b,0);
+        const probs = ex.map(v=>+(v/sum).toFixed(4));
+        const k=probs.length; const sumSq=probs.reduce((a,p)=>a+p*p,0); const uniform=1/k; const confidence = k<=1?1:Math.min(1, Math.max(0,(sumSq-uniform)/(1-uniform)));
+        // gate: confidence >=0.6 or best prob >=0.5 — otherwise uncertain, skip heal
+        const maxIdx = probs.indexOf(Math.max(...probs));
+        const best = pool[maxIdx];
+        const bestProb = probs[maxIdx];
+        if (confidence >= 0.55 || bestProb >= 0.45) {
+          const hloc = await tryLoc(best);
+          if (hloc) return { loc: hloc, healed: true, healedFrom: selector, healedTo: best, confidence: +confidence.toFixed(3), probs };
+        }
+        // fallback: try top-2 if gated out
+        for (const idx of [...probs.entries()].sort((a,b)=>b[1]-a[1]).slice(0,2).map(([i])=>i)) {
+          const hloc = await tryLoc(pool[idx]);
+          if (hloc) return { loc: hloc, healed: true, healedFrom: selector, healedTo: pool[idx], confidence: +confidence.toFixed(3) };
+        }
       }
     } catch {}
     // text fallback (any site)
@@ -867,6 +894,14 @@ export class ChromeExtSession {
         return this.score(step.criteria ?? step.questions, { state: step.jevState ?? (typeof step.state==='object'?step.state:null) }).then(r => ({ result: JSON.stringify(r)}));
       case "noul":
         return this.noul(step.criteria ?? step.questions ?? step.value ?? step.text, { state: step.jevState ?? (typeof step.state==='object'?step.state:null) }).then(r => ({ result: JSON.stringify(r)}));
+      case "trace":
+        return this.trace({ action: step.action ?? step.value ?? "start", path: step.path ?? step.target, snapshots: step.snapshots ?? true, screenshots: step.screenshots ?? true }).then(r => ({ result: JSON.stringify(r) }));
+      case "storage":
+        return this.storage({ action: step.action ?? "get", key: step.key ?? step.selector, value: step.value, type: step.type ?? step.target ?? "local" }).then(r => ({ result: JSON.stringify(r).slice(0,12000) }));
+      case "route":
+        return this.route({ pattern: step.pattern ?? step.selector ?? step.url, mock: step.mock ?? step.body, har: step.har, action: step.action ?? (step.mock!=null?"mock":"continue"), status: step.status, body: step.body, headers: step.headers }).then(r => ({ result: JSON.stringify(r) }));
+      case "a11y":
+        return this.a11y({ selector: step.selector }).then(r => ({ result: JSON.stringify(r).slice(0,12000) }));
       default:
         throw new Error(`unknown batch op: ${step.op} (have ${OPS.join("/")})`);
     }
@@ -1196,6 +1231,124 @@ export class ChromeExtSession {
     return { viewport: page.viewportSize() || viewport };
   }
 
+  // --- H0/H1 batch ops (keep 10-tool budget) ---
+  async trace({ action = "start", path: tracePath = null, snapshots = true, screenshots = true } = {}) {
+    const ctx = this._ctx();
+    if (!ctx.tracing) throw new Error("trace: tracing not available on this browser");
+    if (action === "start" || action === "on") {
+      await ctx.tracing.start({ snapshots, screenshots });
+      this._pushLog("system","info","[trace] started");
+      return { action: "started" };
+    }
+    if (action === "stop" || action === "off" || action === "save") {
+      const dest = tracePath ? resolve(this.artifactsDir || ".", tracePath) : this._uniqueArtifactPath(this.artifactsDir || ".", `trace-${Date.now()}.zip`);
+      await ctx.tracing.stop({ path: dest });
+      try { writeFileSync(join(this.artifactsDir, "manifest.json"), JSON.stringify({ lastTrace: dest, at: new Date().toISOString() })); } catch {}
+      this._pushLog("system","info",`[trace] saved ${dest}`);
+      return { action: "stopped", path: dest };
+    }
+    throw new Error(`trace: action must be "start" or "stop" (got ${action})`);
+  }
+
+  async storage({ action = "get", key = null, value = null, type = "local" } = {}) {
+    const page = await this._ensurePage();
+    const t = (type || "local").toLowerCase();
+    if (t === "cookie" || t === "cookies") {
+      const ctx = this._ctx();
+      if (action === "get") {
+        const cookies = await ctx.cookies();
+        return key ? cookies.filter(c=>c.name===key) : cookies;
+      }
+      if (action === "set") {
+        if (!key) throw new Error("storage cookie set needs key");
+        const url = page.url();
+        const domain = (()=>{ try{ return new URL(url).hostname; } catch{ return undefined; }})();
+        await ctx.addCookies([{ name: key, value: String(value ?? ""), domain, path: "/", url: url.startsWith("http")?url:undefined }].filter(Boolean));
+        return { set: key };
+      }
+      if (action === "clear" || action === "delete" || action === "remove") {
+        if (key) { const cookies = await ctx.cookies(); const keep = cookies.filter(c=>c.name!==key); await ctx.clearCookies(); if (keep.length) await ctx.addCookies(keep); return { deleted: key }; }
+        await ctx.clearCookies(); return { cleared: true };
+      }
+      throw new Error(`storage cookie: unknown action ${action}`);
+    }
+    // local/session storage via evaluate (page context)
+    if (action === "get") {
+      if (key) return await page.evaluate(({k, tp}) => tp==="session"? sessionStorage.getItem(k) : localStorage.getItem(k), {k:key, tp:t});
+      return await page.evaluate((tp) => {
+        const s = tp==="session"? sessionStorage : localStorage;
+        const out={}; for(let i=0;i<s.length;i++){ const k=s.key(i); out[k]=s.getItem(k); } return out;
+      }, t);
+    }
+    if (action === "set") {
+      if (!key) throw new Error("storage set needs key");
+      await page.evaluate(({k,v,tp})=> tp==="session"? sessionStorage.setItem(k,v): localStorage.setItem(k,v), {k:key, v:String(value??""), tp:t});
+      return { set: key };
+    }
+    if (action === "clear") {
+      await page.evaluate((tp)=> tp==="session"? sessionStorage.clear(): localStorage.clear(), t);
+      return { cleared: t };
+    }
+    if (action === "remove" || action === "delete") {
+      if (!key) throw new Error("storage remove needs key");
+      await page.evaluate(({k,tp})=> tp==="session"? sessionStorage.removeItem(k): localStorage.removeItem(k), {k:key, tp:t});
+      return { removed: key };
+    }
+    throw new Error(`storage: unknown action ${action} (use get/set/clear/remove)`);
+  }
+
+  async route({ pattern, mock = null, har = null, action = "mock", status = 200, body = null, headers = null } = {}) {
+    const page = await this._ensurePage();
+    if (!pattern) throw new Error("route: pattern required (glob e.g. **/api/*)");
+    if (action === "unroute" || action === "remove" || action === "clear") {
+      await page.unroute(pattern).catch(()=>{});
+      this._pushLog("system","info",`[route] unrouted ${pattern}`);
+      return { unrouted: pattern };
+    }
+    await page.route(pattern, async (r) => {
+      try {
+        if (mock !== null) {
+          const payload = typeof mock === "string" ? mock : JSON.stringify(mock);
+          await r.fulfill({ status, body: body ?? payload, headers: headers || { "content-type": "application/json" } });
+        } else if (body !== null) {
+          await r.fulfill({ status, body: String(body), headers: headers || {} });
+        } else if (action === "abort") {
+          await r.abort();
+        } else {
+          await r.continue();
+        }
+      } catch (e) { try{ await r.continue(); } catch{} }
+    });
+    this._pushLog("system","info",`[route] ${pattern} → ${mock!==null?"mock": action}`);
+    return { pattern, mocked: mock!==null };
+  }
+
+  async a11y({ selector = null } = {}) {
+    const page = await this._ensurePage();
+    // Prefer axe-core if injected, else fallback to Playwright accessibility snapshot + manual checks
+    const result = await page.evaluate((sel) => {
+      const root = sel ? document.querySelector(sel) : document.body;
+      if (!root) return { error: `no element for ${sel}` };
+      // axe fallback: simple checks without axe injected
+      const issues = [];
+      const imgs = [...root.querySelectorAll('img')].filter(i=> !i.alt);
+      if (imgs.length) issues.push({ rule: "image-alt", count: imgs.length, sample: imgs.slice(0,3).map(i=>i.outerHTML.slice(0,120)) });
+      const inputs = [...root.querySelectorAll('input,select,textarea')].filter(el=>{
+        const lab = el.closest('label') || (el.id && document.querySelector(`label[for='${el.id}']`));
+        const al = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby');
+        return !lab && !al && el.type!=="hidden";
+      });
+      if (inputs.length) issues.push({ rule: "label", count: inputs.length, sample: inputs.slice(0,2).map(i=>i.outerHTML.slice(0,120)) });
+      const headings = [...root.querySelectorAll('h1,h2,h3,h4,h5,h6')].map(h=>({ tag:h.tagName, text:(h.innerText||'').trim().slice(0,60) }));
+      const landmarks = [...root.querySelectorAll('[role],header,nav,main,footer')].length;
+      return { issues, headings: headings.slice(0,12), landmarks, totalIssues: issues.reduce((a,b)=>a+b.count,0) };
+    }, selector);
+    // Enrich with Playwright snapshot size if available
+    let snapshot = null;
+    try { snapshot = await page.accessibility.snapshot(); } catch {}
+    return { ...result, snapshotNodes: snapshot ? 1 : 0 };
+  }
+
   // --- Jev System One: state+questions -> typed answers (calibrated, parallel) ---
   // Mirrors TypeSafe Jev: choice/score/noul primitives. State is auto-captured from
   // current page (url/title/inventory/aria/text) unless explicitly passed.
@@ -1350,7 +1503,12 @@ export class ChromeExtSession {
       }
       try {
         if (statSync(file).isDirectory()) file = join(file, "index.html");
-        res.writeHead(200, { "Content-Type": MIME[extname(file)] ?? "text/plain" });
+        res.writeHead(200, {
+          "Content-Type": MIME[extname(file)] ?? "text/plain",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Security-Policy": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; frame-ancestors 'none'",
+          "Cache-Control": "no-store",
+        });
         res.end(readFileSync(file));
       } catch {
         res.writeHead(404);

@@ -65,6 +65,18 @@ const batchStep = Type.Object({
   questions: Type.Optional(Type.Any({ description: "Jev questions map {id:{type:'choice'|'score'|'noul', criteria}} or shorthand {id: {key:desc}}" })),
   criteria: Type.Optional(Type.Any({ description: "Criteria for choice ({key:desc})/score ([levels])/noul (statement string)" })),
   jevState: Type.Optional(Type.Any({ description: "Override state for Jev (string or object); auto-captured from page if omitted" })),
+  // H0/H1 — batch-only, no new tool (keep 10-tool budget: trace/storage/route/a11y)
+  pattern: Type.Optional(Type.String({ description: "Glob pattern for route (e.g. **/api/*)" })),
+  mock: Type.Optional(Type.Any({ description: "Mock JSON/body for route" })),
+  har: Type.Optional(Type.Any({ description: "HAR path for route" })),
+  action: Type.Optional(Type.String({ description: "Action for trace/storage/route (start/stop/get/set/clear/mock/abort/unroute)" })),
+  status: Type.Optional(Type.Integer({ description: "HTTP status for route mock" })),
+  body: Type.Optional(Type.Any({ description: "Body for route/storage" })),
+  headers: Type.Optional(Type.Any({ description: "Headers map for route" })),
+  path: Type.Optional(Type.String({ description: "File path for trace" })),
+  snapshots: Type.Optional(Type.Boolean({ description: "Include snapshots in trace" })),
+  screenshots: Type.Optional(Type.Boolean({ description: "Include screenshots in trace" })),
+  type: Type.Optional(Type.String({ description: "Storage type: local/session/cookie" })),
 });
 
 // Result shapes. Most tools return a page snapshot; the rest return plain text.
